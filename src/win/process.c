@@ -1045,6 +1045,8 @@ int uv_spawn(uv_loop_t* loop,
     }
     if (!InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_list_size)) {
       err = GetLastError();
+      uv__free(attr_list);
+      attr_list = NULL;
       goto done;
     }
     if (!UpdateProcThreadAttribute(attr_list,
