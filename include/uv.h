@@ -1107,6 +1107,12 @@ typedef struct uv_process_options_s {
    */
   uv_uid_t uid;
   uv_gid_t gid;
+  /*
+   * Windows only: HPCON pseudoconsole handle from CreatePseudoConsole. When
+   * non-NULL, the child is attached to the pseudoconsole and stdio[] is not
+   * inherited (ConPTY provides stdin/stdout/stderr). Ignored on Unix.
+   */
+  void* pseudoconsole;
 } uv_process_options_t;
 
 /*
