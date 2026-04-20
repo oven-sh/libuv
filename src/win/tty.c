@@ -2414,10 +2414,17 @@ static void CALLBACK uv__tty_console_resize_event(HWINEVENTHOOK hWinEventHook,
 }
 
 static DWORD WINAPI uv__tty_console_resize_watcher_thread(void* param) {
+  /* EVENT_CONSOLE_LAYOUT only fires when conhost has a visible window. Under
+   * ConPTY the console window is a hidden pseudo-window, so fall back to
+   * polling the screen-buffer size. uv__tty_console_signal_resize is a no-op
+   * when the size is unchanged. */
+  HWND console_hwnd = GetConsoleWindow();
+  DWORD wait_ms =
+      (console_hwnd != NULL && IsWindowVisible(console_hwnd)) ? INFINITE : 200;
   for (;;) {
     /* Make sure to not overwhelm the system with resize events */
     Sleep(33);
-    WaitForSingleObject(uv__tty_console_resized, INFINITE);
+    WaitForSingleObject(uv__tty_console_resized, wait_ms);
     ResetEvent(uv__tty_console_resized);
     uv__tty_console_signal_resize();
   }
