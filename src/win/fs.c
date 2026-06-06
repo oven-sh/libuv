@@ -2975,29 +2975,424 @@ static void fs__readlink(uv_fs_t* req) {
 }
 
 
+/* Returns the NT namespace path for the handle, e.g.
+ * "\Device\HarddiskVolume4\Users\foo", in a uv__malloc'd buffer whose length
+ * (excluding the terminating NUL) is stored in *len_ptr. Returns NULL on
+ * failure with the error in GetLastError(). */
+static WCHAR* fs__realpath_nt_name(HANDLE handle, DWORD* len_ptr) {
+  WCHAR* buf;
+  DWORD buf_size;
+  DWORD len;
+  DWORD err;
+
+  buf_size = GetFinalPathNameByHandleW(handle, NULL, 0, VOLUME_NAME_NT);
+  if (buf_size == 0)
+    return NULL;
+
+  buf = uv__malloc((buf_size + 1) * sizeof(WCHAR));
+  if (buf == NULL) {
+    SetLastError(ERROR_OUTOFMEMORY);
+    return NULL;
+  }
+
+  len = GetFinalPathNameByHandleW(handle, buf, buf_size, VOLUME_NAME_NT);
+  if (len == 0 || len >= buf_size) {
+    /* len >= buf_size means the path grew between the two calls. */
+    err = len == 0 ? GetLastError() : ERROR_INVALID_HANDLE;
+    uv__free(buf);
+    SetLastError(err);
+    return NULL;
+  }
+
+  *len_ptr = len;
+  return buf;
+}
+
+
+/* Length of the "\Device\<name>" prefix of an NT namespace path; equals
+ * nt_len when the path consists of only the device name. */
+static size_t fs__realpath_nt_device_len(const WCHAR* nt_path, DWORD nt_len) {
+  DWORD i;
+  int slashes;
+
+  slashes = 0;
+  for (i = 0; i < nt_len; i++) {
+    if (nt_path[i] == L'\\') {
+      slashes++;
+      if (slashes == 3)
+        break;
+    }
+  }
+
+  return i;
+}
+
+
+static uv_once_t fs__realpath_device_map_init_guard = UV_ONCE_INIT;
+static uv_mutex_t fs__realpath_device_map_lock;
+static struct {
+  WCHAR device[64];
+  size_t device_len;
+  WCHAR letter;
+} fs__realpath_device_map[26];
+static unsigned int fs__realpath_device_map_size;
+
+
+/* Returns the drive letter the NT device name is known to map to, or L'\0'. */
+static WCHAR fs__realpath_device_map_lookup(const WCHAR* device,
+                                            size_t device_len) {
+  WCHAR letter;
+  unsigned int i;
+
+  letter = L'\0';
+  uv_mutex_lock(&fs__realpath_device_map_lock);
+  for (i = 0; i < fs__realpath_device_map_size; i++) {
+    if (fs__realpath_device_map[i].device_len == device_len &&
+        _wcsnicmp(fs__realpath_device_map[i].device, device, device_len) ==
+            0) {
+      letter = fs__realpath_device_map[i].letter;
+      break;
+    }
+  }
+  uv_mutex_unlock(&fs__realpath_device_map_lock);
+
+  return letter;
+}
+
+
+static void fs__realpath_device_map_add(const WCHAR* device,
+                                        size_t device_len,
+                                        WCHAR letter) {
+  unsigned int i;
+
+  if (device_len >= sizeof(fs__realpath_device_map[0].device) / sizeof(WCHAR))
+    return;
+
+  uv_mutex_lock(&fs__realpath_device_map_lock);
+  for (i = 0; i < fs__realpath_device_map_size; i++)
+    if (fs__realpath_device_map[i].device_len == device_len &&
+        _wcsnicmp(fs__realpath_device_map[i].device, device, device_len) == 0)
+      break;
+
+  if (i == fs__realpath_device_map_size &&
+      i < sizeof(fs__realpath_device_map) / sizeof(fs__realpath_device_map[0])) {
+    memcpy(fs__realpath_device_map[i].device,
+           device,
+           device_len * sizeof(WCHAR));
+    fs__realpath_device_map[i].device_len = device_len;
+    fs__realpath_device_map[i].letter = letter;
+    fs__realpath_device_map_size++;
+  }
+  uv_mutex_unlock(&fs__realpath_device_map_lock);
+}
+
+
+/* Correlates the NT device of an openable "X:..." path with its drive
+ * letter and records the pair in the device map. */
+static void fs__realpath_device_map_seed(const WCHAR* dos_path) {
+  HANDLE handle;
+  WCHAR* nt_path;
+  DWORD nt_len;
+  size_t device_len;
+  const WCHAR* nt_rel;
+  const WCHAR* dos_rel;
+  size_t rel_len;
+  WCHAR letter;
+
+  letter = dos_path[0];
+  if (!IS_LETTER(letter) || dos_path[1] != L':')
+    return;
+  if (letter >= L'a')
+    letter -= L'a' - L'A';
+
+  handle = CreateFileW(dos_path,
+                       0,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                       NULL,
+                       OPEN_EXISTING,
+                       FILE_FLAG_BACKUP_SEMANTICS,
+                       NULL);
+  if (handle == INVALID_HANDLE_VALUE)
+    return;
+
+  nt_path = fs__realpath_nt_name(handle, &nt_len);
+  CloseHandle(handle);
+  if (nt_path == NULL)
+    return;
+
+  device_len = fs__realpath_nt_device_len(nt_path, nt_len);
+  nt_rel = nt_path + device_len;
+  rel_len = nt_len - device_len;
+  dos_rel = dos_path + 2;
+
+  /* Only correlate when the two paths agree below the volume; a reparse
+   * point in between would associate the device with the wrong letter. */
+  if (wcslen(dos_rel) == rel_len && _wcsnicmp(dos_rel, nt_rel, rel_len) == 0)
+    fs__realpath_device_map_add(nt_path, device_len, letter);
+
+  uv__free(nt_path);
+}
+
+
+static void fs__realpath_device_map_init(void) {
+  WCHAR buf[MAX_PATH + 1];
+  DWORD n;
+  DWORD len;
+
+  n = sizeof(buf) / sizeof(WCHAR);
+
+  uv_mutex_init(&fs__realpath_device_map_lock);
+
+  len = GetCurrentDirectoryW(n, buf);
+  if (len > 0 && len < n)
+    fs__realpath_device_map_seed(buf);
+
+  len = GetModuleFileNameW(NULL, buf, n);
+  if (len > 0 && len < n)
+    fs__realpath_device_map_seed(buf);
+
+  len = GetSystemWindowsDirectoryW(buf, n);
+  if (len > 0 && len < n)
+    fs__realpath_device_map_seed(buf);
+
+  len = GetTempPathW(n, buf);
+  if (len > 0 && len < n) {
+    /* GetTempPathW returns the path with a trailing backslash. */
+    if (len > 3 && buf[len - 1] == L'\\')
+      buf[len - 1] = L'\0';
+    fs__realpath_device_map_seed(buf);
+  }
+}
+
+
+/* Finds the drive letter backed by the same volume as `handle` by opening
+ * "\\?\X:<rel>" on every logical drive and comparing file ids. A drive that
+ * matches is recorded in the device map. Returns 0 and stores the letter in
+ * *letter_ptr on success, -1 when no drive matched. */
+static int fs__realpath_device_map_probe(HANDLE handle,
+                                         const WCHAR* device,
+                                         size_t device_len,
+                                         const WCHAR* rel,
+                                         size_t rel_len,
+                                         WCHAR* letter_ptr) {
+  FILE_ID_INFORMATION handle_id;
+  FILE_ID_INFORMATION probe_id;
+  IO_STATUS_BLOCK io_status;
+  NTSTATUS status;
+  WCHAR* probe_path;
+  HANDLE probe;
+  DWORD drives;
+  WCHAR denied_letter;
+  int denied;
+  int found;
+  int i;
+
+  memset(&handle_id, 0, sizeof(handle_id));
+  status = pNtQueryInformationFile(handle,
+                                   &io_status,
+                                   &handle_id,
+                                   sizeof(handle_id),
+                                   FileIdInformation);
+  if (!NT_SUCCESS(status))
+    return -1;
+
+  /* "\\?\X:" + rel + NUL */
+  probe_path = uv__malloc((6 + rel_len + 1) * sizeof(WCHAR));
+  if (probe_path == NULL)
+    return -1;
+
+  memcpy(probe_path, L"\\\\?\\A:", 6 * sizeof(WCHAR));
+  memcpy(probe_path + 6, rel, rel_len * sizeof(WCHAR));
+  probe_path[6 + rel_len] = L'\0';
+
+  found = 0;
+  denied = 0;
+  denied_letter = L'\0';
+  drives = GetLogicalDrives();
+
+  for (i = 0; i < 26; i++) {
+    if (!(drives & (1u << i)))
+      continue;
+
+    probe_path[4] = (WCHAR) (L'A' + i);
+
+    probe = CreateFileW(probe_path,
+                        0,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        NULL,
+                        OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS,
+                        NULL);
+    if (probe == INVALID_HANDLE_VALUE) {
+      if (GetLastError() == ERROR_ACCESS_DENIED) {
+        denied++;
+        denied_letter = probe_path[4];
+      }
+      continue;
+    }
+
+    memset(&probe_id, 0, sizeof(probe_id));
+    status = pNtQueryInformationFile(probe,
+                                     &io_status,
+                                     &probe_id,
+                                     sizeof(probe_id),
+                                     FileIdInformation);
+    CloseHandle(probe);
+
+    if (NT_SUCCESS(status) &&
+        memcmp(&handle_id, &probe_id, sizeof(handle_id)) == 0) {
+      *letter_ptr = probe_path[4];
+      found = 1;
+      break;
+    }
+  }
+
+  uv__free(probe_path);
+
+  if (found) {
+    fs__realpath_device_map_add(device, device_len, *letter_ptr);
+    return 0;
+  }
+
+  /* No drive both opened and matched. When exactly one drive refused the
+   * probe it is the only candidate; use it, but do not cache the guess. */
+  if (denied == 1) {
+    *letter_ptr = denied_letter;
+    return 0;
+  }
+
+  return -1;
+}
+
+
+/* Inside an AppContainer (lowbox token), GetFinalPathNameByHandleW with
+ * VOLUME_NAME_DOS (or VOLUME_NAME_GUID) fails with ERROR_ACCESS_DENIED:
+ * translating the volume device to a DOS name opens the mount manager
+ * device, which the sandbox denies. VOLUME_NAME_NT performs the same
+ * normalization but names the volume as an NT device
+ * ("\Device\HarddiskVolume4\..."), so translate that device prefix back to
+ * a drive letter here. On success stores a uv__malloc'd "\\?\X:..." or
+ * "\\?\UNC\..." path in *realpath_buf_ptr and its length, including the
+ * terminating NUL to match the VOLUME_NAME_DOS size probe in the caller,
+ * in *realpath_len_ptr. */
+static ssize_t fs__realpath_handle_app_container(HANDLE handle,
+                                                 WCHAR** realpath_buf_ptr,
+                                                 DWORD* realpath_len_ptr) {
+  static const WCHAR mup_prefix[] = L"\\Device\\Mup\\";
+  const size_t mup_prefix_len = sizeof(mup_prefix) / sizeof(WCHAR) - 1;
+  WCHAR* nt_path;
+  DWORD nt_len;
+  WCHAR* buf;
+  size_t device_len;
+  const WCHAR* rel;
+  size_t rel_len;
+  WCHAR letter;
+
+  nt_path = fs__realpath_nt_name(handle, &nt_len);
+  if (nt_path == NULL)
+    return -1;
+
+  uv_once(&fs__realpath_device_map_init_guard, fs__realpath_device_map_init);
+
+  if (nt_len > mup_prefix_len &&
+      _wcsnicmp(nt_path, mup_prefix, mup_prefix_len) == 0) {
+    /* Network path: "\Device\Mup\server\share\..." is "\\?\UNC\server\..." */
+    rel = nt_path + mup_prefix_len;
+    rel_len = nt_len - mup_prefix_len;
+
+    buf = uv__malloc((UNC_PATH_PREFIX_LEN + rel_len + 1) * sizeof(WCHAR));
+    if (buf == NULL) {
+      uv__free(nt_path);
+      SetLastError(ERROR_OUTOFMEMORY);
+      return -1;
+    }
+
+    memcpy(buf, UNC_PATH_PREFIX, UNC_PATH_PREFIX_LEN * sizeof(WCHAR));
+    memcpy(buf + UNC_PATH_PREFIX_LEN, rel, rel_len * sizeof(WCHAR));
+    buf[UNC_PATH_PREFIX_LEN + rel_len] = L'\0';
+
+    uv__free(nt_path);
+    *realpath_buf_ptr = buf;
+    *realpath_len_ptr = UNC_PATH_PREFIX_LEN + rel_len + 1;
+    return 0;
+  }
+
+  device_len = fs__realpath_nt_device_len(nt_path, nt_len);
+  rel = nt_path + device_len;
+  rel_len = nt_len - device_len;
+
+  letter = fs__realpath_device_map_lookup(nt_path, device_len);
+  if (letter == L'\0' &&
+      fs__realpath_device_map_probe(handle,
+                                    nt_path,
+                                    device_len,
+                                    rel,
+                                    rel_len,
+                                    &letter) != 0) {
+    uv__free(nt_path);
+    SetLastError(ERROR_ACCESS_DENIED);
+    return -1;
+  }
+
+  /* "\\?\X:" + rel + NUL; rel is empty or starts with a backslash. */
+  buf = uv__malloc((6 + rel_len + 2) * sizeof(WCHAR));
+  if (buf == NULL) {
+    uv__free(nt_path);
+    SetLastError(ERROR_OUTOFMEMORY);
+    return -1;
+  }
+
+  memcpy(buf, L"\\\\?\\A:", 6 * sizeof(WCHAR));
+  buf[4] = letter;
+  memcpy(buf + 6, rel, rel_len * sizeof(WCHAR));
+  if (rel_len == 0) {
+    /* The handle names the volume root. */
+    buf[6] = L'\\';
+    rel_len = 1;
+  }
+  buf[6 + rel_len] = L'\0';
+
+  uv__free(nt_path);
+  *realpath_buf_ptr = buf;
+  *realpath_len_ptr = 6 + rel_len + 1;
+  return 0;
+}
+
+
 static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
   int r;
+  DWORD err;
   DWORD w_realpath_len;
   WCHAR* w_realpath_ptr = NULL;
   WCHAR* w_realpath_buf;
 
   w_realpath_len = GetFinalPathNameByHandleW(handle, NULL, 0, VOLUME_NAME_DOS);
   if (w_realpath_len == 0) {
-    return -1;
-  }
+    if (!(uv__is_app_container() &&
+          GetLastError() == ERROR_ACCESS_DENIED))
+      return -1;
 
-  w_realpath_buf = uv__malloc((w_realpath_len + 1) * sizeof(WCHAR));
-  if (w_realpath_buf == NULL) {
-    SetLastError(ERROR_OUTOFMEMORY);
-    return -1;
-  }
-  w_realpath_ptr = w_realpath_buf;
+    if (fs__realpath_handle_app_container(handle,
+                                          &w_realpath_buf,
+                                          &w_realpath_len) != 0)
+      return -1;
 
-  if (GetFinalPathNameByHandleW(
-          handle, w_realpath_ptr, w_realpath_len, VOLUME_NAME_DOS) == 0) {
-    uv__free(w_realpath_buf);
-    SetLastError(ERROR_INVALID_HANDLE);
-    return -1;
+    w_realpath_ptr = w_realpath_buf;
+  } else {
+    w_realpath_buf = uv__malloc((w_realpath_len + 1) * sizeof(WCHAR));
+    if (w_realpath_buf == NULL) {
+      SetLastError(ERROR_OUTOFMEMORY);
+      return -1;
+    }
+    w_realpath_ptr = w_realpath_buf;
+
+    if (GetFinalPathNameByHandleW(
+            handle, w_realpath_ptr, w_realpath_len, VOLUME_NAME_DOS) == 0) {
+      err = GetLastError();
+      uv__free(w_realpath_buf);
+      SetLastError(err);
+      return -1;
+    }
   }
 
   /* convert UNC path to long path */
