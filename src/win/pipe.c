@@ -107,7 +107,15 @@ static int includes_nul(const char *s, size_t n) {
 
 
 static void uv__unique_pipe_name(unsigned long long ptr, char* name, size_t size) {
-  snprintf(name, size, "\\\\?\\pipe\\uv\\%llu-%lu", ptr, GetCurrentProcessId());
+  /* The LOCAL\ prefix is the only part of the named pipe namespace an
+   * AppContainer (lowbox token) process may create pipes in; everywhere else
+   * CreateNamedPipe fails with ERROR_ACCESS_DENIED. Outside an AppContainer
+   * the prefix has no special meaning and is just part of the name. */
+  snprintf(name,
+           size,
+           "\\\\?\\pipe\\LOCAL\\uv\\%llu-%lu",
+           ptr,
+           GetCurrentProcessId());
 }
 
 
@@ -210,8 +218,10 @@ static int uv__pipe_server(
     HANDLE* pipeHandle_ptr, DWORD access,
     char* name, size_t nameSize, unsigned long long random) {
   HANDLE pipeHandle;
+  int access_denied_retries;
   int err;
 
+  access_denied_retries = 0;
   for (;;) {
     uv__unique_pipe_name(random, name, nameSize);
 
@@ -226,7 +236,17 @@ static int uv__pipe_server(
     }
 
     err = GetLastError();
-    if (err != ERROR_PIPE_BUSY && err != ERROR_ACCESS_DENIED) {
+
+    /* ERROR_ACCESS_DENIED usually means a name collision with a pipe that
+     * was created by another user or with different settings, so trying
+     * again with a new name is the right response. But it is also what a
+     * sandboxed (AppContainer) process gets when it is denied access to
+     * the pipe namespace altogether, in which case retrying forever would
+     * spin; allow one retry, then give up. */
+    if (err == ERROR_ACCESS_DENIED) {
+      if (access_denied_retries++ > 0)
+        goto error;
+    } else if (err != ERROR_PIPE_BUSY) {
       goto error;
     }
 
@@ -785,7 +805,10 @@ int uv_pipe_bind2(uv_pipe_t* handle,
                          TRUE)) {
     err = GetLastError();
     if (err == ERROR_ACCESS_DENIED) {
-      err = UV_EADDRINUSE;
+      /* Inside an AppContainer, creating a pipe anywhere outside of the
+       * \\.\pipe\LOCAL\ prefix fails with ERROR_ACCESS_DENIED; reporting
+       * that as "address in use" would be misleading. */
+      err = uv__is_app_container() ? UV_EACCES : UV_EADDRINUSE;
     } else if (err == ERROR_PATH_NOT_FOUND || err == ERROR_INVALID_NAME) {
       err = UV_EACCES;
     } else {
