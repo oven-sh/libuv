@@ -1869,6 +1869,11 @@ error:
   return r;
 }
 
+int uv_os_is_app_container(void) {
+  /* AppContainers are a Windows concept. */
+  return 0;
+}
+
 int uv__getsockpeername(const uv_handle_t* handle,
                         uv__peersockfunc func,
                         struct sockaddr* name,

@@ -1394,6 +1394,8 @@ UV_EXTERN int uv_os_gethostname(char* buffer, size_t* size);
 
 UV_EXTERN int uv_os_uname(uv_utsname_t* buffer);
 
+UV_EXTERN int uv_os_is_app_container(void);
+
 struct uv_metrics_s {
   uint64_t loop_count;
   uint64_t events;

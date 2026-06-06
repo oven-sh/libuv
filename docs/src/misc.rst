@@ -842,6 +842,14 @@ API
 
     .. versionadded:: 1.25.0
 
+.. c:function:: int uv_os_is_app_container(void)
+
+    Returns `1` when the current process runs inside a Windows AppContainer
+    (that is, with a lowbox token), `0` otherwise. Always returns `0` on
+    platforms other than Windows.
+
+    .. versionadded:: 1.52.0
+
 .. c:function:: int uv_gettimeofday(uv_timeval64_t* tv)
 
     Cross-platform implementation of :man:`gettimeofday(2)`. The timezone

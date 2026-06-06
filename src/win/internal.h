@@ -271,6 +271,8 @@ int uv__getsockpeername(const uv_handle_t* handle,
 
 int uv__random_winrandom(void* buf, size_t buflen);
 
+int uv__is_app_container(void);
+
 
 /*
  * Process stdio handles.

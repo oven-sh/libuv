@@ -236,6 +236,10 @@ TEST_IMPL(platform_output) {
   printf("  version: %s\n", uname.version);
   printf("  machine: %s\n", uname.machine);
 
+  err = uv_os_is_app_container();
+  ASSERT(err == 0 || err == 1);
+  printf("uv_os_is_app_container: %d\n", err);
+
   err = uv_getrusage_thread(&rusage);
   if (err != UV_ENOTSUP) {
     ASSERT_OK(err);

@@ -1730,6 +1730,36 @@ error:
   return r;
 }
 
+static uv_once_t uv__app_container_init_guard = UV_ONCE_INIT;
+static int uv__in_app_container;
+
+static void uv__app_container_init(void) {
+  HANDLE token;
+  DWORD is_app_container;
+  DWORD len;
+
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    return;
+
+  if (GetTokenInformation(token,
+                          TokenIsAppContainer,
+                          &is_app_container,
+                          sizeof(is_app_container),
+                          &len))
+    uv__in_app_container = is_app_container != 0;
+
+  CloseHandle(token);
+}
+
+int uv__is_app_container(void) {
+  uv_once(&uv__app_container_init_guard, uv__app_container_init);
+  return uv__in_app_container;
+}
+
+int uv_os_is_app_container(void) {
+  return uv__is_app_container();
+}
+
 int uv_gettimeofday(uv_timeval64_t* tv) {
   /* Based on https://doxygen.postgresql.org/gettimeofday_8c_source.html */
   const uint64_t epoch = (uint64_t) 116444736000000000ULL;
