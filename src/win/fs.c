@@ -2977,6 +2977,7 @@ static void fs__readlink(uv_fs_t* req) {
 
 static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
   int r;
+  DWORD err;
   DWORD w_realpath_len;
   WCHAR* w_realpath_ptr = NULL;
   WCHAR* w_realpath_buf;
@@ -2995,8 +2996,9 @@ static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
 
   if (GetFinalPathNameByHandleW(
           handle, w_realpath_ptr, w_realpath_len, VOLUME_NAME_DOS) == 0) {
+    err = GetLastError();
     uv__free(w_realpath_buf);
-    SetLastError(ERROR_INVALID_HANDLE);
+    SetLastError(err);
     return -1;
   }
 
