@@ -265,7 +265,8 @@ static int fs__readlink_handle(HANDLE handle,
       assert(*target_ptr == NULL);
       target = uv__malloc(target_len + 1);
       if (target == NULL) {
-        return UV_ENOMEM;
+        SetLastError(ERROR_OUTOFMEMORY);
+        return -1;
       }
       memcpy(target, buffer, target_len);
       target[target_len] = '\0';
@@ -342,7 +343,13 @@ static int fs__readlink_handle(HANDLE handle,
   }
 
   assert(target_ptr == NULL || *target_ptr == NULL);
-  return uv_utf16_to_wtf8(w_target, w_target_len, target_ptr, target_len_ptr);
+  if (uv_utf16_to_wtf8(w_target, w_target_len, target_ptr, target_len_ptr) < 0) {
+    /* uv_utf16_to_wtf8() does not set the thread's last error on failure;
+     * allocation failure is the only way it can fail here. */
+    SetLastError(ERROR_OUTOFMEMORY);
+    return -1;
+  }
+  return 0;
 }
 
 
@@ -3071,6 +3078,8 @@ static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
 
 static void fs__realpath(uv_fs_t* req) {
   HANDLE handle;
+  DWORD error;
+  ssize_t r;
 
   handle = CreateFileW(req->file.pathw,
                        0,
@@ -3085,13 +3094,22 @@ static void fs__realpath(uv_fs_t* req) {
   }
 
   assert(req->ptr == NULL);
-  if (fs__realpath_handle(handle, (char**) &req->ptr) == -1) {
-    CloseHandle(handle);
-    SET_REQ_WIN32_ERROR(req, GetLastError());
+  r = fs__realpath_handle(handle, (char**) &req->ptr);
+  error = GetLastError();
+  CloseHandle(handle);
+
+  if (r == -1) {
+    SET_REQ_WIN32_ERROR(req, error);
     return;
   }
 
-  CloseHandle(handle);
+  if (r < 0) {
+    /* uv_utf16_to_wtf8() failed; it returns a UV error code, not a Win32
+     * error, and does not set the thread's last error. */
+    SET_REQ_UV_ERROR(req, r, ERROR_OUTOFMEMORY);
+    return;
+  }
+
   req->flags |= UV_FS_FREE_PTR;
   SET_REQ_RESULT(req, 0);
 }
