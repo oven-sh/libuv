@@ -265,7 +265,8 @@ static int fs__readlink_handle(HANDLE handle,
       assert(*target_ptr == NULL);
       target = uv__malloc(target_len + 1);
       if (target == NULL) {
-        return UV_ENOMEM;
+        SetLastError(ERROR_OUTOFMEMORY);
+        return -1;
       }
       memcpy(target, buffer, target_len);
       target[target_len] = '\0';
@@ -342,7 +343,13 @@ static int fs__readlink_handle(HANDLE handle,
   }
 
   assert(target_ptr == NULL || *target_ptr == NULL);
-  return uv_utf16_to_wtf8(w_target, w_target_len, target_ptr, target_len_ptr);
+  if (uv_utf16_to_wtf8(w_target, w_target_len, target_ptr, target_len_ptr) < 0) {
+    /* uv_utf16_to_wtf8() does not set the thread's last error on failure;
+     * allocation failure is the only way it can fail here. */
+    SetLastError(ERROR_OUTOFMEMORY);
+    return -1;
+  }
+  return 0;
 }
 
 
