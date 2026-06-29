@@ -555,6 +555,7 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
   LONG status;
   COORD pos;
   BOOL read_console_success;
+  DWORD read_console_error;
   HANDLE read_thread;
 
   assert(data);
@@ -606,6 +607,8 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
                                       chars,
                                       &read_chars,
                                       NULL);
+  /* Captured before the unpublish below can clobber it. */
+  read_console_error = read_console_success ? ERROR_SUCCESS : GetLastError();
 
   EnterCriticalSection(&uv__tty_console_read_thread_lock);
   uv__tty_console_read_thread = NULL;
@@ -622,7 +625,7 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
     SET_REQ_SUCCESS(req);
     req->u.io.overlapped.InternalHigh = (DWORD) read_bytes;
   } else {
-    SET_REQ_ERROR(req, GetLastError());
+    SET_REQ_ERROR(req, read_console_error);
   }
 
   status = InterlockedExchange(&uv__read_console_status, COMPLETED);
