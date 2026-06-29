@@ -3043,8 +3043,9 @@ static void fs__realpath(uv_fs_t* req) {
 
   assert(req->ptr == NULL);
   if (fs__realpath_handle(handle, (char**) &req->ptr) == -1) {
+    DWORD error = GetLastError();
     CloseHandle(handle);
-    SET_REQ_WIN32_ERROR(req, GetLastError());
+    SET_REQ_WIN32_ERROR(req, error);
     return;
   }
 
