@@ -1993,7 +1993,7 @@ static DWORD fs__stat_directory(WCHAR* path,
   UNICODE_STRING FileMask;
   size_t len;
   size_t split;
-  WCHAR splitchar;
+  WCHAR splitchar = L'\0';
   int includes_name;
 
   /* AKA strtok or wcscspn, in reverse. */
@@ -2013,7 +2013,8 @@ static DWORD fs__stat_directory(WCHAR* path,
   if (split == 0 && includes_name) {
     path_dirpath = L".";
   /* If there is a slash or a backslash */
-  } else if (path[split - 1] == L'\\' || path[split - 1] == L'/') {
+  } else if (split > 0 &&
+             (path[split - 1] == L'\\' || path[split - 1] == L'/')) {
     path_dirpath = path;
     /* If there is no filename, consider it as a relative folder path */
     if (!includes_name) {
@@ -2146,7 +2147,8 @@ static DWORD fs__stat_directory(WCHAR* path,
   ret_error = 0;
 
 cleanup:
-  if (split != 0)
+  /* Restore the path only if it was actually split. */
+  if (splitchar != L'\0')
     path[split - 1] = splitchar;
   if (handle != INVALID_HANDLE_VALUE)
     CloseHandle(handle);
