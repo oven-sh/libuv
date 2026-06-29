@@ -242,11 +242,15 @@ static int uv__pipe_server(
      * again with a new name is the right response. But it is also what a
      * sandboxed (AppContainer) process gets when it is denied access to
      * the pipe namespace altogether, in which case retrying forever would
-     * spin; allow one retry, then give up. */
+     * spin; allow one retry, then give up. ERROR_PIPE_BUSY is an ordinary
+     * same-user collision and proves the namespace is accessible, so it
+     * resets the limit. */
     if (err == ERROR_ACCESS_DENIED) {
       if (access_denied_retries++ > 0)
         goto error;
-    } else if (err != ERROR_PIPE_BUSY) {
+    } else if (err == ERROR_PIPE_BUSY) {
+      access_denied_retries = 0;
+    } else {
       goto error;
     }
 
@@ -384,10 +388,10 @@ int uv_pipe(uv_file fds[2], int read_flags, int write_flags) {
                              0,
                              (uintptr_t) &fds[0]);
   if (err != 0)
-    return err;
+    return uv_translate_sys_error(err);
   temp[0] = _open_osfhandle((intptr_t) readh, 0);
   if (temp[0] == -1) {
-    if (errno == UV_EMFILE)
+    if (errno == EMFILE)
       err = UV_EMFILE;
     else
       err = UV_UNKNOWN;
@@ -397,7 +401,7 @@ int uv_pipe(uv_file fds[2], int read_flags, int write_flags) {
   }
   temp[1] = _open_osfhandle((intptr_t) writeh, 0);
   if (temp[1] == -1) {
-    if (errno == UV_EMFILE)
+    if (errno == EMFILE)
       err = UV_EMFILE;
     else
       err = UV_UNKNOWN;
