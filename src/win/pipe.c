@@ -815,7 +815,17 @@ int uv_pipe_bind2(uv_pipe_t* handle,
                          TRUE)) {
     err = GetLastError();
     if (err == ERROR_ACCESS_DENIED) {
-      err = UV_EADDRINUSE;
+      /* With FILE_FLAG_FIRST_PIPE_INSTANCE this means a pipe with that name
+       * already exists - unless the process is denied the pipe namespace
+       * altogether (e.g. a sandboxed process binding outside \\.\pipe\LOCAL\),
+       * which fails the same way. Disambiguate by checking whether the name
+       * exists: WaitNamedPipe does not consume a pipe connection and reports
+       * ERROR_FILE_NOT_FOUND for a name without any live instance. */
+      if (!WaitNamedPipeW(handle->name, NMPWAIT_NOWAIT) &&
+          GetLastError() == ERROR_FILE_NOT_FOUND)
+        err = UV_EACCES;
+      else
+        err = UV_EADDRINUSE;
     } else if (err == ERROR_PATH_NOT_FOUND || err == ERROR_INVALID_NAME) {
       err = UV_EACCES;
     } else {
