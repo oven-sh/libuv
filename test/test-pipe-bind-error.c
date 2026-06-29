@@ -24,6 +24,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#ifdef _WIN32
+# include <errno.h>
+# include <fcntl.h>
+# include <io.h>
+#endif
+
 
 #ifdef _WIN32
 # define BAD_PIPENAME "bad-pipe"
@@ -213,3 +219,38 @@ TEST_IMPL(pipe_overlong_path) {
   MAKE_VALGRIND_HAPPY(uv_default_loop());
   return 0;
 }
+
+
+#ifdef _WIN32
+TEST_IMPL(pipe_emfile) {
+  uv_file fds[2];
+  int held[16384];
+  int nheld;
+  int fd;
+  int i;
+
+  /* Exhaust the CRT file descriptor table; the pipe handles themselves are
+   * NT handles and unaffected, so uv_pipe() fails precisely at
+   * _open_osfhandle with errno EMFILE, which must surface as UV_EMFILE
+   * (it used to surface as UV_UNKNOWN). */
+  nheld = 0;
+  while (nheld < (int) ARRAY_SIZE(held)) {
+    fd = _open("NUL", _O_RDONLY);
+    if (fd == -1) {
+      ASSERT_EQ(EMFILE, errno);
+      break;
+    }
+    held[nheld++] = fd;
+  }
+  ASSERT_GT(nheld, 0);
+  ASSERT_LT(nheld, (int) ARRAY_SIZE(held));
+
+  ASSERT_EQ(UV_EMFILE, uv_pipe(fds, 0, 0));
+
+  for (i = 0; i < nheld; i++)
+    _close(held[i]);
+
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  return 0;
+}
+#endif

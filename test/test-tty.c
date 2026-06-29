@@ -339,6 +339,52 @@ TEST_IMPL(tty_raw_cancel) {
   MAKE_VALGRIND_HAPPY(uv_default_loop());
   return 0;
 }
+
+TEST_IMPL(tty_line_read_cancel_no_inject) {
+  int r;
+  int ttyin_fd;
+  uv_tty_t tty_in;
+  HANDLE handle;
+
+  /* A read-only console handle cannot be written to with
+   * WriteConsoleInputW, the way libuv normally wakes a pending console
+   * read to cancel it; the same happens in sandboxed processes that are
+   * denied input injection on an inherited console. Cancellation must
+   * fall back to aborting the blocked read instead of deadlocking. */
+  handle = CreateFileA("conin$",
+                       GENERIC_READ,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       NULL,
+                       OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL,
+                       NULL);
+  ASSERT_PTR_NE(handle, INVALID_HANDLE_VALUE);
+  ttyin_fd = _open_osfhandle((intptr_t) handle, 0);
+  ASSERT_GE(ttyin_fd, 0);
+  ASSERT_EQ(UV_TTY, uv_guess_handle(ttyin_fd));
+
+  r = uv_tty_init(uv_default_loop(), &tty_in, ttyin_fd, 1);  /* Readable. */
+  ASSERT_OK(r);
+
+  /* Line (normal) mode: the read blocks a worker thread in ReadConsoleW. */
+  r = uv_read_start((uv_stream_t*) &tty_in, tty_raw_alloc, tty_raw_read);
+  ASSERT_OK(r);
+
+  /* Give the worker time to enter ReadConsoleW. */
+  uv_sleep(100);
+
+  r = uv_read_stop((uv_stream_t*) &tty_in);
+  ASSERT_OK(r);
+
+  /* The loop must drain the cancelled read and close cleanly; this hung
+   * (or deadlocked on the tty output lock) when the cancellation error
+   * path leaked state. */
+  uv_close((uv_handle_t*) &tty_in, NULL);
+  uv_run(uv_default_loop(), UV_RUN_DEFAULT);
+
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  return 0;
+}
 #endif
 
 
