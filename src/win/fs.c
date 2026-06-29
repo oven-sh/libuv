@@ -3071,6 +3071,8 @@ static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
 
 static void fs__realpath(uv_fs_t* req) {
   HANDLE handle;
+  DWORD error;
+  ssize_t r;
 
   handle = CreateFileW(req->file.pathw,
                        0,
@@ -3085,13 +3087,22 @@ static void fs__realpath(uv_fs_t* req) {
   }
 
   assert(req->ptr == NULL);
-  if (fs__realpath_handle(handle, (char**) &req->ptr) == -1) {
-    CloseHandle(handle);
-    SET_REQ_WIN32_ERROR(req, GetLastError());
+  r = fs__realpath_handle(handle, (char**) &req->ptr);
+  error = GetLastError();
+  CloseHandle(handle);
+
+  if (r == -1) {
+    SET_REQ_WIN32_ERROR(req, error);
     return;
   }
 
-  CloseHandle(handle);
+  if (r < 0) {
+    /* uv_utf16_to_wtf8() failed; it returns a UV error code, not a Win32
+     * error, and does not set the thread's last error. */
+    SET_REQ_UV_ERROR(req, r, ERROR_OUTOFMEMORY);
+    return;
+  }
+
   req->flags |= UV_FS_FREE_PTR;
   SET_REQ_RESULT(req, 0);
 }
