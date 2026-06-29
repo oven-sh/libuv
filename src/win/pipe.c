@@ -244,18 +244,24 @@ static int uv__pipe_server(
      * the pipe namespace altogether, in which case retrying forever would
      * spin; allow one retry, then give up. ERROR_PIPE_BUSY is an ordinary
      * same-user collision and proves the namespace is accessible, so it
-     * resets the limit. */
+     * resets the limit.
+     *
+     * The names tried so far are guessable (they derive from a fixed seed
+     * and the pid), so a denial may also be another process squatting on
+     * them; retry with an unguessable name so that a second denial really
+     * does mean the namespace is inaccessible. */
     if (err == ERROR_ACCESS_DENIED) {
       if (access_denied_retries++ > 0)
         goto error;
+      if (uv__random_winrandom(&random, sizeof(random)) != 0)
+        random++;
     } else if (err == ERROR_PIPE_BUSY) {
       access_denied_retries = 0;
+      /* Pipe name collision.  Increment the random number and try again. */
+      random++;
     } else {
       goto error;
     }
-
-    /* Pipe name collision.  Increment the random number and try again. */
-    random++;
   }
 
   *pipeHandle_ptr = pipeHandle;
