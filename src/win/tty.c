@@ -148,6 +148,22 @@ static void uv__tty_console_signal_resize(void);
    scenario the main thread will still block when trying to acquire the lock. */
 static uv_sem_t uv_tty_output_lock;
 
+/* A sandboxed process (e.g. a Windows AppContainer) may be able to read from
+   a console it inherited while being denied WriteConsoleInputW on it, which
+   uv__tty_read_stop and uv__cancel_read_console rely on to wake a pending
+   console read. Track the thread that is blocked in ReadConsoleW so that
+   cancellation can fall back to CancelSynchronousIo. Console line reads are
+   serialized (see uv__read_console_status), so a single slot suffices. The
+   critical section keeps the handle alive while it is being used. */
+static CRITICAL_SECTION uv__tty_console_read_thread_lock;
+static HANDLE uv__tty_console_read_thread;
+
+/* Stored in handle->tty.rd.read_raw_wait between arming the raw-read wait
+   and RegisterWaitForSingleObject's out-parameter store: the wait callback
+   may fire in that window and would otherwise claim a NULL handle and drop
+   the completion. Distinct from any real wait handle. */
+#define UV__TTY_RAW_WAIT_PENDING ((HANDLE) (uintptr_t) -1)
+
 static WORD uv_tty_default_text_attributes =
     FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
 
@@ -169,6 +185,7 @@ void uv__console_init(void) {
 
   if (uv_sem_init(&uv_tty_output_lock, 1))
     abort();
+  InitializeCriticalSection(&uv__tty_console_read_thread_lock);
   uv__tty_console_handle_out = CreateFileW(L"CONOUT$",
                                            GENERIC_READ | GENERIC_WRITE,
                                            FILE_SHARE_WRITE,
@@ -459,6 +476,7 @@ static void CALLBACK uv_tty_post_raw_read(void* data, BOOLEAN didTimeout) {
   uv_loop_t* loop;
   uv_tty_t* handle;
   uv_req_t* req;
+  HANDLE wait;
 
   assert(data);
   assert(!didTimeout);
@@ -467,8 +485,17 @@ static void CALLBACK uv_tty_post_raw_read(void* data, BOOLEAN didTimeout) {
   handle = (uv_tty_t*) req->data;
   loop = handle->loop;
 
-  UnregisterWait(handle->tty.rd.read_raw_wait);
-  handle->tty.rd.read_raw_wait = NULL;
+  /* uv__tty_read_stop may claim the request instead when it cannot wake the
+     console wait; whoever exchanges read_raw_wait to NULL posts the
+     completion. The wait may fire before RegisterWaitForSingleObject's
+     out-parameter store is visible, in which case the field still holds
+     UV__TTY_RAW_WAIT_PENDING and uv__tty_queue_read_raw unregisters the
+     wait. */
+  wait = InterlockedExchangePointer(&handle->tty.rd.read_raw_wait, NULL);
+  if (wait == NULL)
+    return;
+  if (wait != UV__TTY_RAW_WAIT_PENDING)
+    UnregisterWait(wait);
 
   SET_REQ_SUCCESS(req);
   POST_COMPLETION_FOR_REQ(loop, req);
@@ -477,6 +504,7 @@ static void CALLBACK uv_tty_post_raw_read(void* data, BOOLEAN didTimeout) {
 
 static void uv__tty_queue_read_raw(uv_loop_t* loop, uv_tty_t* handle) {
   uv_read_t* req;
+  HANDLE raw_wait;
   BOOL r;
 
   assert(handle->flags & UV_HANDLE_READING);
@@ -489,7 +517,8 @@ static void uv__tty_queue_read_raw(uv_loop_t* loop, uv_tty_t* handle) {
   req = &handle->read_req;
   memset(&req->u.io.overlapped, 0, sizeof(req->u.io.overlapped));
 
-  r = RegisterWaitForSingleObject(&handle->tty.rd.read_raw_wait,
+  handle->tty.rd.read_raw_wait = UV__TTY_RAW_WAIT_PENDING;
+  r = RegisterWaitForSingleObject(&raw_wait,
                                   handle->handle,
                                   uv_tty_post_raw_read,
                                   (void*) req,
@@ -499,6 +528,14 @@ static void uv__tty_queue_read_raw(uv_loop_t* loop, uv_tty_t* handle) {
     handle->tty.rd.read_raw_wait = NULL;
     SET_REQ_ERROR(req, GetLastError());
     uv__insert_pending_req(loop, (uv_req_t*)req);
+  } else if (InterlockedCompareExchangePointer(&handle->tty.rd.read_raw_wait,
+                                               raw_wait,
+                                               UV__TTY_RAW_WAIT_PENDING) !=
+             UV__TTY_RAW_WAIT_PENDING) {
+    /* The wait already fired and its callback claimed the request before the
+       wait handle was published; the callback could not unregister a handle
+       it never saw, so do it here. */
+    UnregisterWaitEx(raw_wait, INVALID_HANDLE_VALUE);
   }
 
   handle->flags |= UV_HANDLE_READ_PENDING;
@@ -518,6 +555,7 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
   LONG status;
   COORD pos;
   BOOL read_console_success;
+  HANDLE read_thread;
 
   assert(data);
 
@@ -548,11 +586,32 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
     return 0;
   }
 
+  /* Publish this thread so uv__cancel_read_console can fall back to
+     CancelSynchronousIo when injecting console input is not permitted. */
+  if (!DuplicateHandle(GetCurrentProcess(),
+                       GetCurrentThread(),
+                       GetCurrentProcess(),
+                       &read_thread,
+                       0,
+                       FALSE,
+                       DUPLICATE_SAME_ACCESS)) {
+    read_thread = NULL;
+  }
+  EnterCriticalSection(&uv__tty_console_read_thread_lock);
+  uv__tty_console_read_thread = read_thread;
+  LeaveCriticalSection(&uv__tty_console_read_thread_lock);
+
   read_console_success = ReadConsoleW(handle->handle,
                                       (void*) utf16,
                                       chars,
                                       &read_chars,
                                       NULL);
+
+  EnterCriticalSection(&uv__tty_console_read_thread_lock);
+  uv__tty_console_read_thread = NULL;
+  LeaveCriticalSection(&uv__tty_console_read_thread_lock);
+  if (read_thread != NULL)
+    CloseHandle(read_thread);
 
   if (read_console_success) {
     read_bytes = bytes;
@@ -987,8 +1046,13 @@ void uv_process_tty_read_line_req(uv_loop_t* loop, uv_tty_t* handle,
   handle->tty.rd.read_line_buffer = uv_null_buf_;
 
   if (!REQ_SUCCESS(req)) {
-    /* Read was not successful */
-    if (handle->flags & UV_HANDLE_READING) {
+    /* Read was not successful. A cancelled read (e.g. CancelSynchronousIo
+       when console input injection is denied) completes with an error but
+       must be suppressed like the success path suppresses an injected
+       VK_RETURN, or a cancel-and-restart would deliver a stray read_cb and
+       stop the restarted read. */
+    if ((handle->flags & UV_HANDLE_READING) &&
+        !(handle->flags & UV_HANDLE_CANCELLATION_PENDING)) {
       /* Real error */
       handle->flags &= ~UV_HANDLE_READING;
       DECREASE_ACTIVE_COUNT(loop, handle);
@@ -996,6 +1060,7 @@ void uv_process_tty_read_line_req(uv_loop_t* loop, uv_tty_t* handle,
                       uv_translate_sys_error(GET_REQ_ERROR(req)),
                       &buf);
     }
+    handle->flags &= ~UV_HANDLE_CANCELLATION_PENDING;
   } else {
     if (!(handle->flags & UV_HANDLE_CANCELLATION_PENDING) &&
         req->u.io.overlapped.InternalHigh != 0) {
@@ -1069,6 +1134,7 @@ int uv__tty_read_start(uv_tty_t* handle, uv_alloc_cb alloc_cb,
 
 
 int uv__tty_read_stop(uv_tty_t* handle) {
+  HANDLE raw_wait;
   INPUT_RECORD record;
   DWORD written, err;
 
@@ -1084,7 +1150,19 @@ int uv__tty_read_stop(uv_tty_t* handle) {
     memset(&record, 0, sizeof record);
     record.EventType = FOCUS_EVENT;
     if (!WriteConsoleInputW(handle->handle, &record, 1, &written)) {
-      return GetLastError();
+      /* A sandboxed process may be denied input injection on a console it
+         inherited. The raw read is only a registered wait on the console
+         handle, so cancel the wait and complete the read request here
+         instead. Claiming read_raw_wait decides who posts the completion:
+         this thread, or a concurrently firing uv_tty_post_raw_read. */
+      raw_wait = InterlockedExchangePointer(&handle->tty.rd.read_raw_wait,
+                                            NULL);
+      if (raw_wait != NULL) {
+        UnregisterWaitEx(raw_wait, INVALID_HANDLE_VALUE);
+        SET_REQ_SUCCESS(&handle->read_req);
+        POST_COMPLETION_FOR_REQ(handle->loop, (uv_req_t*) &handle->read_req);
+      }
+      return 0;
     }
   } else if (!(handle->flags & UV_HANDLE_CANCELLATION_PENDING)) {
     /* Cancel line-buffered read if not already pending */
@@ -1096,6 +1174,43 @@ int uv__tty_read_stop(uv_tty_t* handle) {
   }
 
   return 0;
+}
+
+
+/* Abort a ReadConsoleW call that is blocking the console read thread. Used
+   when waking the thread by writing an input record was denied (sandboxed
+   processes may not inject input into an inherited console). Returns
+   non-zero on success; the reader then completes with
+   ERROR_OPERATION_ABORTED and releases uv_tty_output_lock as usual. */
+static BOOL uv__cancel_console_read_thread(void) {
+  BOOL cancelled;
+  DWORD error;
+  int tries;
+
+  cancelled = FALSE;
+  /* The caller has observed the read IN_PROGRESS and armed the trap, but the
+     reader publishes its thread handle and enters ReadConsoleW a moment
+     later, so both may still be ahead of it: retry briefly. Stop as soon as
+     the trap is no longer armed (the reader completed on its own). */
+  for (tries = 0; tries < 100; tries++) {
+    error = ERROR_NOT_FOUND;
+    EnterCriticalSection(&uv__tty_console_read_thread_lock);
+    if (uv__tty_console_read_thread != NULL) {
+      if (CancelSynchronousIo(uv__tty_console_read_thread))
+        cancelled = TRUE;
+      else
+        error = GetLastError();
+    }
+    LeaveCriticalSection(&uv__tty_console_read_thread_lock);
+    if (cancelled || error != ERROR_NOT_FOUND)
+      break;
+    if (InterlockedCompareExchange(&uv__read_console_status,
+                                   TRAP_REQUESTED,
+                                   TRAP_REQUESTED) != TRAP_REQUESTED)
+      break;
+    Sleep(1);
+  }
+  return cancelled;
 }
 
 static int uv__cancel_read_console(uv_tty_t* handle) {
@@ -1144,8 +1259,30 @@ static int uv__cancel_read_console(uv_tty_t* handle) {
     MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC);
   record.Event.KeyEvent.uChar.UnicodeChar = L'\r';
   record.Event.KeyEvent.dwControlKeyState = 0;
-  if (!WriteConsoleInputW(handle->handle, &record, 1, &written))
+  if (!WriteConsoleInputW(handle->handle, &record, 1, &written)) {
     err = GetLastError();
+    if (uv__cancel_console_read_thread()) {
+      /* The blocked ReadConsoleW was aborted instead; the reader completes
+         and releases the output lock just as if it had read the injected
+         key event. */
+      err = 0;
+    } else if (InterlockedCompareExchange(&uv__read_console_status,
+                                          IN_PROGRESS,
+                                          TRAP_REQUESTED) == TRAP_REQUESTED) {
+      /* The trap was withdrawn before the reader consumed it. The reader is
+         still blocked and will not release the output lock, so release it
+         here; later tty operations would deadlock otherwise. Report success
+         so the caller marks the cancellation pending and the read's eventual
+         completion is suppressed instead of surfacing as a stray read_cb. */
+      uv_sem_post(&uv_tty_output_lock);
+      err = 0;
+    } else {
+      /* The reader completed concurrently (e.g. the user pressed ENTER): it
+         consumed the trap and released the output lock, so the cancellation
+         did succeed after all. */
+      err = 0;
+    }
+  }
 
   if (active_screen_buffer != INVALID_HANDLE_VALUE)
     CloseHandle(active_screen_buffer);
