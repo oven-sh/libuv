@@ -848,7 +848,9 @@ API
     (that is, with a lowbox token), `0` otherwise. Always returns `0` on
     platforms other than Windows.
 
-    .. versionadded:: 1.52.0
+    .. note::
+        This function is an extension of this libuv fork; it is not part of
+        an upstream libuv release.
 
 .. c:function:: int uv_gettimeofday(uv_timeval64_t* tv)
 
