@@ -152,9 +152,10 @@ static uv_sem_t uv_tty_output_lock;
    a console it inherited while being denied WriteConsoleInputW on it, which
    uv__tty_read_stop and uv__cancel_read_console rely on to wake a pending
    console read. Track the thread that is blocked in ReadConsoleW so that
-   cancellation can fall back to CancelSynchronousIo. Console line reads are
-   serialized (see uv__read_console_status), so a single slot suffices. The
-   critical section keeps the handle alive while it is being used. */
+   cancellation can fall back to CancelSynchronousIo. Line reads against the
+   process's console are serialized through uv__read_console_status, so a
+   single slot suffices for the supported single-reader case. The critical
+   section keeps the handle alive while it is being used. */
 static CRITICAL_SECTION uv__tty_console_read_thread_lock;
 static HANDLE uv__tty_console_read_thread;
 
