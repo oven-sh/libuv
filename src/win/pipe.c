@@ -257,8 +257,11 @@ static int uv__pipe_server(
         random++;
     } else if (err == ERROR_PIPE_BUSY) {
       access_denied_retries = 0;
-      /* Pipe name collision.  Increment the random number and try again. */
-      random++;
+      /* Pipe name collision. A squatter can force this error too (a pipe
+       * with spare instance capacity), so draw a fresh name rather than
+       * walking predictably off the current one. */
+      if (uv__random_winrandom(&random, sizeof(random)) != 0)
+        random++;
     } else {
       goto error;
     }
@@ -744,7 +747,7 @@ int uv_pipe_bind2(uv_pipe_t* handle,
   int i, err;
   int access_denied_retried;
   int name_exists;
-  WCHAR probe_sep;
+  int probe_swapped;
   uv_pipe_accept_t* req;
   char* name_copy;
 
@@ -828,23 +831,30 @@ int uv_pipe_bind2(uv_pipe_t* handle,
        * exists: WaitNamedPipe does not consume a pipe connection and reports
        * ERROR_FILE_NOT_FOUND for a name without any live instance. It rejects
        * the \\?\ spelling with ERROR_BAD_PATHNAME, so probe through the \\.\
-       * form. */
-      probe_sep = handle->name[2];
-      if (probe_sep == L'?' &&
-          handle->name[0] == L'\\' &&
+       * form. (A probe that fails any other way - e.g. itself denied by a
+       * stricter sandbox - conservatively keeps the EADDRINUSE verdict.)
+       * Each index below is only read after the previous one proved non-NUL,
+       * so short names never read past the terminator. */
+      probe_swapped = 0;
+      if (handle->name[0] == L'\\' &&
           handle->name[1] == L'\\' &&
+          handle->name[2] == L'?' &&
           handle->name[3] == L'\\') {
         handle->name[2] = L'.';
+        probe_swapped = 1;
       }
       name_exists = WaitNamedPipeW(handle->name, NMPWAIT_NOWAIT) ||
                     GetLastError() != ERROR_FILE_NOT_FOUND;
-      handle->name[2] = probe_sep;
+      if (probe_swapped)
+        handle->name[2] = L'?';
       if (name_exists) {
         err = UV_EADDRINUSE;
       } else if (!access_denied_retried) {
         /* No live instance: either the namespace is denied, or the colliding
          * server disappeared between the create and the probe. Retry the
-         * create once to tell the two apart. */
+         * create once to tell the two apart. (A server vanishing again in
+         * this window can still be misread as a denial; one bounded retry is
+         * the deliberate trade against probing forever.) */
         access_denied_retried = 1;
         continue;
       } else {
