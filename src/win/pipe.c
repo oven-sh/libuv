@@ -742,6 +742,9 @@ int uv_pipe_bind2(uv_pipe_t* handle,
                   unsigned int flags) {
   uv_loop_t* loop = handle->loop;
   int i, err;
+  int access_denied_retried;
+  int name_exists;
+  WCHAR probe_sep;
   uv_pipe_accept_t* req;
   char* name_copy;
 
@@ -809,10 +812,13 @@ int uv_pipe_bind2(uv_pipe_t* handle,
    * Attempt to create the first pipe with FILE_FLAG_FIRST_PIPE_INSTANCE.
    * If this fails then there's already a pipe server for the given pipe name.
    */
-  if (!pipe_alloc_accept(loop,
-                         handle,
-                         &handle->pipe.serv.accept_reqs[0],
-                         TRUE)) {
+  access_denied_retried = 0;
+  for (;;) {
+    if (pipe_alloc_accept(loop,
+                          handle,
+                          &handle->pipe.serv.accept_reqs[0],
+                          TRUE))
+      break;
     err = GetLastError();
     if (err == ERROR_ACCESS_DENIED) {
       /* With FILE_FLAG_FIRST_PIPE_INSTANCE this means a pipe with that name
@@ -820,12 +826,30 @@ int uv_pipe_bind2(uv_pipe_t* handle,
        * altogether (e.g. a sandboxed process binding outside \\.\pipe\LOCAL\),
        * which fails the same way. Disambiguate by checking whether the name
        * exists: WaitNamedPipe does not consume a pipe connection and reports
-       * ERROR_FILE_NOT_FOUND for a name without any live instance. */
-      if (!WaitNamedPipeW(handle->name, NMPWAIT_NOWAIT) &&
-          GetLastError() == ERROR_FILE_NOT_FOUND)
-        err = UV_EACCES;
-      else
+       * ERROR_FILE_NOT_FOUND for a name without any live instance. It rejects
+       * the \\?\ spelling with ERROR_BAD_PATHNAME, so probe through the \\.\
+       * form. */
+      probe_sep = handle->name[2];
+      if (probe_sep == L'?' &&
+          handle->name[0] == L'\\' &&
+          handle->name[1] == L'\\' &&
+          handle->name[3] == L'\\') {
+        handle->name[2] = L'.';
+      }
+      name_exists = WaitNamedPipeW(handle->name, NMPWAIT_NOWAIT) ||
+                    GetLastError() != ERROR_FILE_NOT_FOUND;
+      handle->name[2] = probe_sep;
+      if (name_exists) {
         err = UV_EADDRINUSE;
+      } else if (!access_denied_retried) {
+        /* No live instance: either the namespace is denied, or the colliding
+         * server disappeared between the create and the probe. Retry the
+         * create once to tell the two apart. */
+        access_denied_retried = 1;
+        continue;
+      } else {
+        err = UV_EACCES;
+      }
     } else if (err == ERROR_PATH_NOT_FOUND || err == ERROR_INVALID_NAME) {
       err = UV_EACCES;
     } else {
