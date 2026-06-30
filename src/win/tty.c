@@ -1207,8 +1207,11 @@ static BOOL uv__cancel_console_read_thread(void) {
   /* The caller has observed the read IN_PROGRESS and armed the trap, but the
      reader publishes its thread handle and enters ReadConsoleW a moment
      later, so both may still be ahead of it: retry briefly. Stop as soon as
-     the trap is no longer armed (the reader completed on its own). */
-  for (tries = 0; tries < 100; tries++) {
+     the trap is no longer armed (the reader completed on its own). Each
+     Sleep(1) rounds up to the system timer resolution, so the worst case is
+     a few hundred milliseconds, paid only when cancellation already failed
+     its primary path. */
+  for (tries = 0; tries < 32; tries++) {
     error = ERROR_NOT_FOUND;
     EnterCriticalSection(&uv__tty_console_read_thread_lock);
     if (uv__tty_console_read_thread != NULL) {
