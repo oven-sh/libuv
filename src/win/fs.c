@@ -1994,7 +1994,7 @@ static DWORD fs__stat_directory(WCHAR* path,
   size_t len;
   size_t split;
   WCHAR splitchar = L'\0';
-  WCHAR drive_root[4];
+  WCHAR drive_root[8];
   int includes_name;
 
   /* AKA strtok or wcscspn, in reverse. */
@@ -2021,13 +2021,17 @@ static DWORD fs__stat_directory(WCHAR* path,
     if (!includes_name) {
       split = len;
     /* Else, split it */
-    } else if (split == 3 && path[1] == L':') {
-      /* Splitting "X:\name" must keep the root's backslash: "X:" alone is
-       * drive-relative (the drive's current directory), not the root. */
+    } else if (split == 1) {
+      /* "\name": keep the separator; it means the current drive's root. */
       drive_root[0] = path[0];
-      drive_root[1] = L':';
-      drive_root[2] = L'\\';
-      drive_root[3] = L'\0';
+      drive_root[1] = L'\0';
+      path_dirpath = drive_root;
+    } else if (split >= 3 && split <= 7 && path[split - 2] == L':') {
+      /* Splitting "X:\name" (or "\\?\X:\name") must keep the root's
+       * backslash: "X:" alone is drive-relative (the drive's current
+       * directory), not the root, and "\\?\X:" opens the volume device. */
+      memcpy(drive_root, path, split * sizeof(WCHAR));
+      drive_root[split] = L'\0';
       path_dirpath = drive_root;
     } else {
       splitchar = path[split - 1];
