@@ -166,15 +166,23 @@ int uv__create_nul_handle(HANDLE* handle_ptr,
      * denied the NUL device, which would fail every spawn with an ignored
      * stdio slot. Substitute an anonymous pipe with the other end closed:
      * reads see EOF and writes fail fast instead of blocking, which is the
-     * closest available approximation of the null device. */
+     * closest available approximation of the null device. Create both ends
+     * non-inheritable: a concurrent CreateProcess must never inherit the
+     * doomed end (that would keep the pipe alive and turn the EOF/fail-fast
+     * guarantee into a hang); only the kept end is marked inheritable. */
     if (access & FILE_READ_DATA) {
-      if (!CreatePipe(&handle, &other, &sa, 0))
+      if (!CreatePipe(&handle, &other, NULL, 0))
         return err;
     } else {
-      if (!CreatePipe(&other, &handle, &sa, 0))
+      if (!CreatePipe(&other, &handle, NULL, 0))
         return err;
     }
     CloseHandle(other);
+    if (!SetHandleInformation(handle, HANDLE_FLAG_INHERIT,
+                              HANDLE_FLAG_INHERIT)) {
+      CloseHandle(handle);
+      return err;
+    }
   }
 
   *handle_ptr = handle;
