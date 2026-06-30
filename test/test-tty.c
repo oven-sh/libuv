@@ -386,7 +386,9 @@ TEST_IMPL(tty_line_read_cancel_no_inject) {
   return 0;
 }
 
-static char exact_fill_mem[8];
+/* Sized exactly to the allocation the test hands out, so a regression to
+ * the old one-byte NUL overflow lands out of bounds for ASAN to catch. */
+static char exact_fill_mem[6];
 static int exact_fill_reads;
 
 static void exact_fill_alloc(uv_handle_t* handle,

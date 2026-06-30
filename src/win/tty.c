@@ -632,11 +632,13 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
                          &read_bytes) != 0) {
       /* Only reachable when the allocation cannot hold even one converted
        * character (len <= 3); on failure read_bytes holds the required, not
-       * the written, length. Deliver nothing rather than torn bytes. */
-      read_bytes = 0;
+       * the written, length. Surface ENOBUFS rather than torn bytes or a
+       * silent empty read that would consume input forever. */
+      SET_REQ_ERROR(req, WSAENOBUFS);
+    } else {
+      SET_REQ_SUCCESS(req);
+      req->u.io.overlapped.InternalHigh = (DWORD) read_bytes;
     }
-    SET_REQ_SUCCESS(req);
-    req->u.io.overlapped.InternalHigh = (DWORD) read_bytes;
   } else {
     SET_REQ_ERROR(req, read_console_error);
   }
