@@ -536,8 +536,15 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
   }
 
   /* At last, unicode! One utf-16 codeunit never takes more than 3 utf-8
-   * codeunits to encode. */
-  chars = bytes / 3;
+   * codeunits to encode, and the conversion below gets a buffer one byte
+   * smaller than the allocation so the NUL terminator stays in bounds. Size
+   * the read so the worst case always fits; otherwise the converter
+   * truncates mid-character and reports the larger required length, which
+   * would surface as nread bigger than what was written (or even bigger
+   * than the buffer). */
+  chars = (bytes - 1) / 3;
+  if (chars == 0)
+    chars = 1;
 
   status = InterlockedExchange(&uv__read_console_status, IN_PROGRESS);
   if (status == TRAP_REQUESTED) {
@@ -557,10 +564,15 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
   if (read_console_success) {
     assert(bytes > 0);
     read_bytes = bytes - 1;
-    uv_utf16_to_wtf8(utf16,
-                     read_chars,
-                     &handle->tty.rd.read_line_buffer.base,
-                     &read_bytes);
+    if (uv_utf16_to_wtf8(utf16,
+                         read_chars,
+                         &handle->tty.rd.read_line_buffer.base,
+                         &read_bytes) != 0) {
+      /* Only reachable when the allocation cannot hold even one converted
+       * character (len <= 3); on failure read_bytes holds the required, not
+       * the written, length. Deliver nothing rather than torn bytes. */
+      read_bytes = 0;
+    }
     SET_REQ_SUCCESS(req);
     req->u.io.overlapped.InternalHigh = (DWORD) read_bytes;
   } else {

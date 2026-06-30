@@ -339,6 +339,109 @@ TEST_IMPL(tty_raw_cancel) {
   MAKE_VALGRIND_HAPPY(uv_default_loop());
   return 0;
 }
+
+static char exact_fill_mem[8];
+static int exact_fill_reads;
+
+static void exact_fill_alloc(uv_handle_t* handle,
+                             size_t suggested_size,
+                             uv_buf_t* buf) {
+  /* A 6-byte buffer: exactly two 3-byte UTF-8 characters, the shape that
+   * used to overflow (one NUL past the end) and then, after the first fix,
+   * delivered a torn character with nread == 6. */
+  *buf = uv_buf_init(exact_fill_mem, 6);
+}
+
+static void exact_fill_read(uv_stream_t* stream,
+                            ssize_t nread,
+                            const uv_buf_t* buf) {
+  if (nread == 0)
+    return;
+  ASSERT_GT(nread, 0);
+  /* The NUL terminator must stay inside the allocation, so a single read
+   * can never fill it completely. */
+  ASSERT_LE(nread, 5);
+  /* The payload must be complete UTF-8 sequences: no embedded NUL, no
+   * character torn at the end of the buffer. */
+  {
+    ssize_t n = 0;
+    while (n < nread) {
+      unsigned char c = (unsigned char) buf->base[n];
+      int seq;
+      ASSERT_NE(0, c);
+      if (c < 0x80)
+        seq = 1;
+      else if ((c >> 5) == 0x6)
+        seq = 2;
+      else if ((c >> 4) == 0xE)
+        seq = 3;
+      else if ((c >> 3) == 0x1E)
+        seq = 4;
+      else
+        seq = 0;  /* stray continuation byte = torn character */
+      ASSERT_GT(seq, 0);
+      ASSERT_LE(n + seq, nread);
+      n += seq;
+    }
+  }
+  exact_fill_reads++;
+  if (exact_fill_reads == 2)
+    uv_read_stop(stream);
+}
+
+TEST_IMPL(tty_line_read_exact_fill) {
+  int r;
+  int ttyin_fd;
+  uv_tty_t tty_in;
+  uv_loop_t* loop = uv_default_loop();
+  HANDLE handle;
+  INPUT_RECORD records[3];
+  DWORD written;
+  int i;
+
+  handle = CreateFileA("conin$",
+                       GENERIC_READ | GENERIC_WRITE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       NULL,
+                       OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL,
+                       NULL);
+  ASSERT_PTR_NE(handle, INVALID_HANDLE_VALUE);
+  FlushConsoleInputBuffer(handle);
+  ttyin_fd = _open_osfhandle((intptr_t) handle, 0);
+  ASSERT_GE(ttyin_fd, 0);
+  ASSERT_EQ(UV_TTY, uv_guess_handle(ttyin_fd));
+
+  r = uv_tty_init(loop, &tty_in, ttyin_fd, 1);  /* Readable, line mode. */
+  ASSERT_OK(r);
+
+  /* Two copies of U+4E2D (3 UTF-8 bytes each) and ENTER. */
+  for (i = 0; i < 3; i++) {
+    memset(&records[i], 0, sizeof(records[i]));
+    records[i].EventType = KEY_EVENT;
+    records[i].Event.KeyEvent.bKeyDown = TRUE;
+    records[i].Event.KeyEvent.wRepeatCount = 1;
+    records[i].Event.KeyEvent.uChar.UnicodeChar = (WCHAR) ((i < 2) ? 0x4E2D : 0x000D);
+  }
+  records[2].Event.KeyEvent.wVirtualKeyCode = VK_RETURN;
+  records[2].Event.KeyEvent.wVirtualScanCode =
+      MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC);
+  ASSERT(WriteConsoleInputW(handle, records, 3, &written));
+  ASSERT_EQ(3, written);
+
+  exact_fill_reads = 0;
+  r = uv_read_start((uv_stream_t*) &tty_in, exact_fill_alloc, exact_fill_read);
+  ASSERT_OK(r);
+
+  uv_run(loop, UV_RUN_DEFAULT);
+  ASSERT_GE(exact_fill_reads, 2);
+
+  uv_close((uv_handle_t*) &tty_in, NULL);
+  uv_run(loop, UV_RUN_DEFAULT);
+
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  return 0;
+}
 #endif
 
 
