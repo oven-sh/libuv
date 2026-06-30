@@ -144,7 +144,9 @@ static int uv__duplicate_fd(uv_loop_t* loop, int fd, HANDLE* dup) {
 int uv__create_nul_handle(HANDLE* handle_ptr,
     DWORD access) {
   HANDLE handle;
+  HANDLE other;
   SECURITY_ATTRIBUTES sa;
+  DWORD err;
 
   sa.nLength = sizeof sa;
   sa.lpSecurityDescriptor = NULL;
@@ -158,7 +160,21 @@ int uv__create_nul_handle(HANDLE* handle_ptr,
                        0,
                        NULL);
   if (handle == INVALID_HANDLE_VALUE) {
-    return GetLastError();
+    err = GetLastError();
+
+    /* Some sandboxed processes (e.g. a Windows Server AppContainer) are
+     * denied the NUL device, which would fail every spawn with an ignored
+     * stdio slot. Substitute an anonymous pipe with the other end closed:
+     * reads see EOF and writes fail fast instead of blocking, which is the
+     * closest available approximation of the null device. */
+    if (access & FILE_READ_DATA) {
+      if (!CreatePipe(&handle, &other, &sa, 0))
+        return err;
+    } else {
+      if (!CreatePipe(&other, &handle, &sa, 0))
+        return err;
+    }
+    CloseHandle(other);
   }
 
   *handle_ptr = handle;
