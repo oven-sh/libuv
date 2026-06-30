@@ -258,7 +258,7 @@ static int uv__pipe_server(
     } else if (err == ERROR_PIPE_BUSY) {
       access_denied_retries = 0;
       /* Pipe name collision. A squatter can force this error too (a pipe
-       * with spare instance capacity), so draw a fresh name rather than
+       * at full instance capacity), so draw a fresh name rather than
        * walking predictably off the current one. */
       if (uv__random_winrandom(&random, sizeof(random)) != 0)
         random++;
