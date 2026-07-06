@@ -586,17 +586,11 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
   if (chars == 0)
     chars = 1;
 
-  status = InterlockedExchange(&uv__read_console_status, IN_PROGRESS);
-  if (status == TRAP_REQUESTED) {
-    SET_REQ_SUCCESS(req);
-    InterlockedExchange(&uv__read_console_status, COMPLETED);
-    req->u.io.overlapped.InternalHigh = 0;
-    POST_COMPLETION_FOR_REQ(loop, req);
-    return 0;
-  }
-
   /* Publish this thread so uv__cancel_read_console can fall back to
-     CancelSynchronousIo when injecting console input is not permitted. */
+     CancelSynchronousIo when injecting console input is not permitted.
+     Published BEFORE the status flip: once the canceller observes
+     IN_PROGRESS the handle (or the failed-duplication sentinel) is already
+     visible, so it never has to wait for publication. */
   if (!DuplicateHandle(GetCurrentProcess(),
                        GetCurrentThread(),
                        GetCurrentProcess(),
@@ -604,11 +598,25 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
                        0,
                        FALSE,
                        DUPLICATE_SAME_ACCESS)) {
-    read_thread = NULL;
+    read_thread = INVALID_HANDLE_VALUE;
   }
   EnterCriticalSection(&uv__tty_console_read_thread_lock);
   uv__tty_console_read_thread = read_thread;
   LeaveCriticalSection(&uv__tty_console_read_thread_lock);
+
+  status = InterlockedExchange(&uv__read_console_status, IN_PROGRESS);
+  if (status == TRAP_REQUESTED) {
+    EnterCriticalSection(&uv__tty_console_read_thread_lock);
+    uv__tty_console_read_thread = NULL;
+    LeaveCriticalSection(&uv__tty_console_read_thread_lock);
+    if (read_thread != INVALID_HANDLE_VALUE)
+      CloseHandle(read_thread);
+    SET_REQ_SUCCESS(req);
+    InterlockedExchange(&uv__read_console_status, COMPLETED);
+    req->u.io.overlapped.InternalHigh = 0;
+    POST_COMPLETION_FOR_REQ(loop, req);
+    return 0;
+  }
 
   read_console_success = ReadConsoleW(handle->handle,
                                       (void*) utf16,
@@ -621,7 +629,7 @@ static DWORD CALLBACK uv_tty_line_read_thread(void* data) {
   EnterCriticalSection(&uv__tty_console_read_thread_lock);
   uv__tty_console_read_thread = NULL;
   LeaveCriticalSection(&uv__tty_console_read_thread_lock);
-  if (read_thread != NULL)
+  if (read_thread != INVALID_HANDLE_VALUE)
     CloseHandle(read_thread);
 
   if (read_console_success) {
@@ -1202,35 +1210,41 @@ int uv__tty_read_stop(uv_tty_t* handle) {
    non-zero on success; the reader then completes with
    ERROR_OPERATION_ABORTED and releases uv_tty_output_lock as usual. */
 static BOOL uv__cancel_console_read_thread(void) {
+  HANDLE read_thread;
   BOOL cancelled;
   DWORD error;
   int tries;
 
   cancelled = FALSE;
-  /* The caller has observed the read IN_PROGRESS and armed the trap, but the
-     reader publishes its thread handle and enters ReadConsoleW a moment
-     later, so both may still be ahead of it: retry briefly. Stop as soon as
-     the trap is no longer armed (the reader completed on its own). Each
-     Sleep(1) rounds up to the system timer resolution, so the worst case is
-     a few hundred milliseconds, paid only when cancellation already failed
-     its primary path. */
-  for (tries = 0; tries < 32; tries++) {
-    error = ERROR_NOT_FOUND;
+  /* The reader publishes its thread handle before flipping the status to
+     IN_PROGRESS, so the handle (or the failed-duplication sentinel) is
+     already visible here. ERROR_NOT_FOUND therefore only means the reader
+     is in the short lock-free stretch on either side of its wait, never
+     that it is still ahead of publication: yield and retry, the same shape
+     as uv__pipe_interrupt_read. Stop as soon as the trap is no longer armed
+     (the reader completed on its own). The bound only matters on console
+     hosts whose reads cannot be cancelled at all - the caller then
+     withdraws the trap - and it spins yields, not timers. */
+  for (tries = 0; tries < 4096; tries++) {
+    error = ERROR_SUCCESS;
     EnterCriticalSection(&uv__tty_console_read_thread_lock);
-    if (uv__tty_console_read_thread != NULL) {
-      if (CancelSynchronousIo(uv__tty_console_read_thread))
+    read_thread = uv__tty_console_read_thread;
+    if (read_thread != NULL && read_thread != INVALID_HANDLE_VALUE) {
+      if (CancelSynchronousIo(read_thread))
         cancelled = TRUE;
       else
         error = GetLastError();
     }
     LeaveCriticalSection(&uv__tty_console_read_thread_lock);
-    if (cancelled || error != ERROR_NOT_FOUND)
+    if (cancelled || read_thread == INVALID_HANDLE_VALUE)
+      break;
+    if (error != ERROR_SUCCESS && error != ERROR_NOT_FOUND)
       break;
     if (InterlockedCompareExchange(&uv__read_console_status,
                                    TRAP_REQUESTED,
                                    TRAP_REQUESTED) != TRAP_REQUESTED)
       break;
-    Sleep(1);
+    SwitchToThread();
   }
   return cancelled;
 }
