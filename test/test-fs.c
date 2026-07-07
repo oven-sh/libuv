@@ -4932,4 +4932,61 @@ TEST_IMPL(fs_wtf) {
   MAKE_VALGRIND_HAPPY(loop);
   return 0;
 }
+
+
+TEST_IMPL(fs_stat_locked_root_file) {
+  /* The memory manager holds C:\pagefile.sys exclusively, so a direct stat
+   * open fails with a sharing violation and takes the directory-listing
+   * fallback. The old splitter searched the per-drive current directory for
+   * root-adjacent spellings, returning ENOENT or a same-named decoy's
+   * stats, and opened the raw volume for the \\?\ spelling. */
+  int r;
+  FILE* decoy;
+  char cwd[PATHMAX];
+  DWORD cwd_len;
+  WIN32_FIND_DATAA find_data;
+  HANDLE find;
+
+  /* GetFileAttributes takes the same locked-open path under test, so probe
+   * existence through the directory listing instead. */
+  find = FindFirstFileA("C:\\pagefile.sys", &find_data);
+  if (find == INVALID_HANDLE_VALUE)
+    RETURN_SKIP("no C:\\pagefile.sys on this host");
+  FindClose(find);
+
+  /* A 7-byte decoy in the cwd satisfied the old drive-relative search. */
+  decoy = fopen("pagefile.sys", "wb");
+  if (decoy != NULL) {
+    ASSERT_EQ(7, fwrite("decoy!\n", 1, 7, decoy));
+    ASSERT_OK(fclose(decoy));
+  }
+
+  r = uv_fs_stat(NULL, &stat_req, "C:\\pagefile.sys", NULL);
+  ASSERT_OK(r);
+  ASSERT_NE(7, (int) stat_req.statbuf.st_size);
+  ASSERT_GT(stat_req.statbuf.st_size, 0);
+  uv_fs_req_cleanup(&stat_req);
+
+  r = uv_fs_stat(NULL, &stat_req, "\\\\?\\C:\\pagefile.sys", NULL);
+  ASSERT_OK(r);
+  ASSERT_GT(stat_req.statbuf.st_size, 0);
+  uv_fs_req_cleanup(&stat_req);
+
+  /* Rooted spelling resolves against the current drive. */
+  cwd_len = GetCurrentDirectoryA(sizeof(cwd), cwd);
+  if (cwd_len >= 2 && cwd_len < sizeof(cwd) &&
+      (cwd[0] == 'C' || cwd[0] == 'c') && cwd[1] == ':') {
+    r = uv_fs_stat(NULL, &stat_req, "\\pagefile.sys", NULL);
+    ASSERT_OK(r);
+    ASSERT_NE(7, (int) stat_req.statbuf.st_size);
+    ASSERT_GT(stat_req.statbuf.st_size, 0);
+    uv_fs_req_cleanup(&stat_req);
+  }
+
+  if (decoy != NULL)
+    ASSERT_OK(unlink("pagefile.sys"));
+
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  return 0;
+}
 #endif
