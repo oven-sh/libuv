@@ -490,6 +490,84 @@ TEST_IMPL(tty_line_read_exact_fill) {
   MAKE_VALGRIND_HAPPY(uv_default_loop());
   return 0;
 }
+
+
+static char enobufs_mem[3];
+static int enobufs_reads;
+
+static void enobufs_alloc(uv_handle_t* handle,
+                          size_t suggested_size,
+                          uv_buf_t* buf) {
+  /* Too small to hold even one converted 3-byte UTF-8 character. */
+  *buf = uv_buf_init(enobufs_mem, 3);
+}
+
+static void enobufs_read(uv_stream_t* stream,
+                         ssize_t nread,
+                         const uv_buf_t* buf) {
+  if (nread == 0)
+    return;
+  /* An allocation that cannot fit one converted character must surface
+   * UV_ENOBUFS instead of silently consuming input or tearing bytes. */
+  ASSERT_EQ(UV_ENOBUFS, nread);
+  enobufs_reads++;
+  uv_read_stop(stream);
+}
+
+TEST_IMPL(tty_line_read_enobufs) {
+  int r;
+  int ttyin_fd;
+  uv_tty_t tty_in;
+  uv_loop_t* loop = uv_default_loop();
+  HANDLE handle;
+  INPUT_RECORD records[2];
+  DWORD written;
+  int i;
+
+  handle = CreateFileA("conin$",
+                       GENERIC_READ | GENERIC_WRITE,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       NULL,
+                       OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL,
+                       NULL);
+  ASSERT_PTR_NE(handle, INVALID_HANDLE_VALUE);
+  FlushConsoleInputBuffer(handle);
+  ttyin_fd = _open_osfhandle((intptr_t) handle, 0);
+  ASSERT_GE(ttyin_fd, 0);
+  ASSERT_EQ(UV_TTY, uv_guess_handle(ttyin_fd));
+
+  r = uv_tty_init(loop, &tty_in, ttyin_fd, 1);  /* Readable, line mode. */
+  ASSERT_OK(r);
+
+  /* One U+4E2D (3 UTF-8 bytes, over the 2 usable bytes) and ENTER. */
+  for (i = 0; i < 2; i++) {
+    memset(&records[i], 0, sizeof(records[i]));
+    records[i].EventType = KEY_EVENT;
+    records[i].Event.KeyEvent.bKeyDown = TRUE;
+    records[i].Event.KeyEvent.wRepeatCount = 1;
+    records[i].Event.KeyEvent.uChar.UnicodeChar =
+        (WCHAR) ((i == 0) ? 0x4E2D : 0x000D);
+  }
+  records[1].Event.KeyEvent.wVirtualKeyCode = VK_RETURN;
+  records[1].Event.KeyEvent.wVirtualScanCode =
+      MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC);
+  ASSERT(WriteConsoleInputW(handle, records, 2, &written));
+  ASSERT_EQ(2, written);
+
+  enobufs_reads = 0;
+  r = uv_read_start((uv_stream_t*) &tty_in, enobufs_alloc, enobufs_read);
+  ASSERT_OK(r);
+
+  uv_run(loop, UV_RUN_DEFAULT);
+  ASSERT_EQ(1, enobufs_reads);
+
+  uv_close((uv_handle_t*) &tty_in, NULL);
+  uv_run(loop, UV_RUN_DEFAULT);
+
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  return 0;
+}
 #endif
 
 
