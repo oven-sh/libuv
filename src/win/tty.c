@@ -1222,9 +1222,9 @@ static BOOL uv__cancel_console_read_thread(void) {
      is in the short lock-free stretch on either side of its wait, never
      that it is still ahead of publication: yield and retry, the same shape
      as uv__pipe_interrupt_read. Stop as soon as the trap is no longer armed
-     (the reader completed on its own). The bound only matters on console
-     hosts whose reads cannot be cancelled at all - the caller then
-     withdraws the trap - and it spins yields, not timers. */
+     (the reader completed on its own). The bound spins yields, not timers;
+     exhausting it - an uncancellable console read, or a reader preempted
+     past the whole spin - makes the caller withdraw the trap. */
   for (tries = 0; tries < 4096; tries++) {
     error = ERROR_SUCCESS;
     EnterCriticalSection(&uv__tty_console_read_thread_lock);
