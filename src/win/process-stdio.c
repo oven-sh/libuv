@@ -142,14 +142,10 @@ static int uv__duplicate_fd(uv_loop_t* loop, int fd, HANDLE* dup) {
 
 
 int uv__create_nul_handle(HANDLE* handle_ptr,
-    DWORD access,
-    int* is_pipe) {
+    DWORD access) {
   HANDLE handle;
-  HANDLE other;
   SECURITY_ATTRIBUTES sa;
-  DWORD err;
 
-  *is_pipe = 0;
   sa.nLength = sizeof sa;
   sa.lpSecurityDescriptor = NULL;
   sa.bInheritHandle = TRUE;
@@ -162,34 +158,7 @@ int uv__create_nul_handle(HANDLE* handle_ptr,
                        0,
                        NULL);
   if (handle == INVALID_HANDLE_VALUE) {
-    err = GetLastError();
-
-    /* Some sandboxed processes (e.g. a Windows Server AppContainer) are
-     * denied the NUL device, which would fail every spawn with an ignored
-     * stdio slot. Substitute an anonymous pipe with the other end closed:
-     * reads see EOF and writes fail fast instead of blocking, which is the
-     * closest available approximation of the null device. Only the denial
-     * takes this fallback; any other failure remains a spawn error. Create
-     * both ends non-inheritable: a concurrent CreateProcess must never
-     * inherit the doomed end (that would keep the pipe alive and turn the
-     * EOF/fail-fast guarantee into a hang); only the kept end is marked
-     * inheritable. */
-    if (err != ERROR_ACCESS_DENIED)
-      return err;
-    if (access & FILE_READ_DATA) {
-      if (!CreatePipe(&handle, &other, NULL, 0))
-        return err;
-    } else {
-      if (!CreatePipe(&other, &handle, NULL, 0))
-        return err;
-    }
-    CloseHandle(other);
-    if (!SetHandleInformation(handle, HANDLE_FLAG_INHERIT,
-                              HANDLE_FLAG_INHERIT)) {
-      CloseHandle(handle);
-      return err;
-    }
-    *is_pipe = 1;
+    return GetLastError();
   }
 
   *handle_ptr = handle;
@@ -247,20 +216,15 @@ int uv__stdio_create(uv_loop_t* loop,
          * INVALID_HANDLE_VALUE, which should be okay. */
         if (i <= 2) {
           HANDLE nul;
-          int is_pipe;
           DWORD access = (i == 0) ? FILE_GENERIC_READ :
                                     FILE_GENERIC_WRITE | FILE_READ_ATTRIBUTES;
 
-          err = uv__create_nul_handle(&nul, access, &is_pipe);
+          err = uv__create_nul_handle(&nul, access);
           if (err)
             goto error;
 
-          /* The CRT flags must match the actual handle type: FDEV makes the
-           * child's _isatty() true, and a CRT stdio stream that believes it
-           * is a device line-buffers and mishandles the substituted pipe's
-           * failing writes mid-run instead of at exit. */
-          memcpy(CHILD_STDIO_HANDLE(buffer, i), &nul, sizeof(HANDLE));
-          CHILD_STDIO_CRT_FLAGS(buffer, i) = FOPEN | (is_pipe ? FPIPE : FDEV);
+		  memcpy(CHILD_STDIO_HANDLE(buffer, i), &nul, sizeof(HANDLE));
+          CHILD_STDIO_CRT_FLAGS(buffer, i) = FOPEN | FDEV;
         }
         break;
 
