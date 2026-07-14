@@ -388,6 +388,7 @@ TEST_DECLARE   (fs_symlink)
 TEST_DECLARE   (fs_symlink_dir)
 #ifdef _WIN32
 TEST_DECLARE   (fs_symlink_junction)
+TEST_DECLARE   (fs_readlink_global_junction)
 TEST_DECLARE   (fs_non_symlink_reparse_point)
 TEST_DECLARE   (fs_lstat_windows_store_apps)
 TEST_DECLARE   (fs_open_flags)
@@ -1122,6 +1123,7 @@ TASK_LIST_START
   TEST_ENTRY  (fs_symlink_dir)
 #ifdef _WIN32
   TEST_ENTRY  (fs_symlink_junction)
+  TEST_ENTRY  (fs_readlink_global_junction)
   TEST_ENTRY  (fs_non_symlink_reparse_point)
   TEST_ENTRY  (fs_lstat_windows_store_apps)
   TEST_ENTRY  (fs_open_flags)

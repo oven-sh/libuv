@@ -255,27 +255,51 @@ static int fs__readlink_handle(HANDLE handle,
     w_target_len = reparse_data->MountPointReparseBuffer.SubstituteNameLength /
         sizeof(WCHAR);
 
-    /* Only treat junctions that look like \??\<drive>:\ as symlink. Junctions
-     * can also be used as mount points, like \??\Volume{<guid>}, but that's
-     * confusing for programs since they wouldn't be able to actually
-     * understand such a path when returned by uv_readlink(). UNC paths are
-     * never valid for junctions so we don't care about them. */
-    if (!(w_target_len >= 6 &&
-          w_target[0] == L'\\' &&
-          w_target[1] == L'?' &&
-          w_target[2] == L'?' &&
-          w_target[3] == L'\\' &&
-          ((w_target[4] >= L'A' && w_target[4] <= L'Z') ||
-           (w_target[4] >= L'a' && w_target[4] <= L'z')) &&
-          w_target[5] == L':' &&
-          (w_target_len == 6 || w_target[6] == L'\\'))) {
+    /* Only treat junctions that look like \??\<drive>:\ or
+     * \??\Global\<drive>:\ as symlink. The kernel canonicalizes the target of
+     * junctions created under a sandbox device map to the Global form; return
+     * the equivalent win32 spelling \\?\Global\<drive>:\ verbatim so no
+     * target information is dropped. Junctions can also be used as mount
+     * points, like \??\Volume{<guid>}, but that's confusing for programs
+     * since they wouldn't be able to actually understand such a path when
+     * returned by uv_readlink(). UNC paths are never valid for junctions so
+     * we don't care about them. */
+    if (w_target_len >= 6 &&
+        w_target[0] == L'\\' &&
+        w_target[1] == L'?' &&
+        w_target[2] == L'?' &&
+        w_target[3] == L'\\' &&
+        ((w_target[4] >= L'A' && w_target[4] <= L'Z') ||
+         (w_target[4] >= L'a' && w_target[4] <= L'z')) &&
+        w_target[5] == L':' &&
+        (w_target_len == 6 || w_target[6] == L'\\')) {
+      /* Remove leading \??\ */
+      w_target += 4;
+      w_target_len -= 4;
+
+    } else if (w_target_len >= 13 &&
+               w_target[0] == L'\\' &&
+               w_target[1] == L'?' &&
+               w_target[2] == L'?' &&
+               w_target[3] == L'\\' &&
+               (w_target[4] == L'G' || w_target[4] == L'g') &&
+               (w_target[5] == L'L' || w_target[5] == L'l') &&
+               (w_target[6] == L'O' || w_target[6] == L'o') &&
+               (w_target[7] == L'B' || w_target[7] == L'b') &&
+               (w_target[8] == L'A' || w_target[8] == L'a') &&
+               (w_target[9] == L'L' || w_target[9] == L'l') &&
+               w_target[10] == L'\\' &&
+               ((w_target[11] >= L'A' && w_target[11] <= L'Z') ||
+                (w_target[11] >= L'a' && w_target[11] <= L'z')) &&
+               w_target[12] == L':' &&
+               (w_target_len == 13 || w_target[13] == L'\\')) {
+      /* Rewrite \??\Global\ to \\?\Global\ */
+      w_target[1] = L'\\';
+
+    } else {
       SetLastError(ERROR_SYMLINK_NOT_SUPPORTED);
       return -1;
     }
-
-    /* Remove leading \??\ */
-    w_target += 4;
-    w_target_len -= 4;
 
   } else if (reparse_data->ReparseTag == IO_REPARSE_TAG_APPEXECLINK) {
     /* String #3 in the list has the target filename. */

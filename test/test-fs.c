@@ -2693,6 +2693,207 @@ TEST_IMPL(fs_non_symlink_reparse_point) {
   return 0;
 }
 
+/* Layout of the mount point arm of the REPARSE_DATA_BUFFER structure, which
+ * only ships in driver kit headers. */
+typedef struct {
+  ULONG ReparseTag;
+  USHORT ReparseDataLength;
+  USHORT Reserved;
+  USHORT SubstituteNameOffset;
+  USHORT SubstituteNameLength;
+  USHORT PrintNameOffset;
+  USHORT PrintNameLength;
+  WCHAR PathBuffer[PATHMAX];
+} mount_point_reparse_data;
+
+static void utf8_to_wchar(const char* source,
+                          WCHAR* w_target,
+                          size_t w_target_size) {
+  int w_len;
+
+  w_len = MultiByteToWideChar(CP_UTF8,
+                              0,
+                              source,
+                              -1,
+                              w_target,
+                              (int) w_target_size);
+  ASSERT_GT(w_len, 0);
+}
+
+static DWORD set_mount_point(const WCHAR* dir,
+                             const WCHAR* substitute,
+                             const WCHAR* print) {
+  mount_point_reparse_data data;
+  HANDLE handle;
+  DWORD bytes;
+  DWORD error;
+  size_t substitute_len;
+  size_t print_len;
+
+  substitute_len = wcslen(substitute);
+  print_len = wcslen(print);
+  ASSERT_LE(substitute_len + print_len + 2, ARRAY_SIZE(data.PathBuffer));
+
+  data.ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+  data.Reserved = 0;
+  data.SubstituteNameOffset = 0;
+  data.SubstituteNameLength = (USHORT) (substitute_len * sizeof(WCHAR));
+  data.PrintNameOffset = (USHORT) ((substitute_len + 1) * sizeof(WCHAR));
+  data.PrintNameLength = (USHORT) (print_len * sizeof(WCHAR));
+  data.ReparseDataLength = (USHORT)
+      (FIELD_OFFSET(mount_point_reparse_data, PathBuffer) -
+       FIELD_OFFSET(mount_point_reparse_data, SubstituteNameOffset) +
+       (substitute_len + 1 + print_len + 1) * sizeof(WCHAR));
+  wcscpy(data.PathBuffer, substitute);
+  wcscpy(data.PathBuffer + substitute_len + 1, print);
+
+  handle = CreateFileW(dir,
+                       GENERIC_WRITE,
+                       0,
+                       NULL,
+                       OPEN_EXISTING,
+                       FILE_FLAG_OPEN_REPARSE_POINT |
+                         FILE_FLAG_BACKUP_SEMANTICS,
+                       NULL);
+  if (handle == INVALID_HANDLE_VALUE)
+    return GetLastError();
+
+  error = ERROR_SUCCESS;
+  if (!DeviceIoControl(handle,
+                       FSCTL_SET_REPARSE_POINT,
+                       &data,
+                       FIELD_OFFSET(mount_point_reparse_data,
+                                    SubstituteNameOffset) +
+                         data.ReparseDataLength,
+                       NULL,
+                       0,
+                       &bytes,
+                       NULL))
+    error = GetLastError();
+
+  CloseHandle(handle);
+  return error;
+}
+
+TEST_IMPL(fs_readlink_global_junction) {
+  /* The kernel canonicalizes the target of junctions created under a sandbox
+   * (AppContainer) device map to \??\Global\<drive>:\. Plant that exact
+   * reparse data by hand so the test doesn't need to run in a container. */
+  uv_fs_t req;
+  int r;
+  int fd;
+  DWORD error;
+  HANDLE handle;
+  char cwd[PATHMAX];
+  size_t cwd_size;
+  char target[PATHMAX];
+  char substitute[PATHMAX];
+  char expected[PATHMAX];
+  char marker[PATHMAX];
+  WCHAR substitute_w[PATHMAX];
+  WCHAR target_w[PATHMAX];
+  WCHAR marker_w[PATHMAX];
+
+  /* set-up */
+  unlink("test_dir_target/marker");
+  rmdir("test_dir_target");
+  rmdir("test_dir_junction");
+
+  loop = uv_default_loop();
+
+  cwd_size = sizeof(cwd);
+  r = uv_cwd(cwd, &cwd_size);
+  ASSERT_OK(r);
+  if (!(((cwd[0] >= 'A' && cwd[0] <= 'Z') ||
+         (cwd[0] >= 'a' && cwd[0] <= 'z')) &&
+        cwd[1] == ':'))
+    RETURN_SKIP("current directory has no drive letter");
+
+  r = uv_fs_mkdir(NULL, &req, "test_dir_target", 0777, NULL);
+  ASSERT_OK(r);
+  uv_fs_req_cleanup(&req);
+
+  r = uv_fs_mkdir(NULL, &req, "test_dir_junction", 0777, NULL);
+  ASSERT_OK(r);
+  uv_fs_req_cleanup(&req);
+
+  r = uv_fs_open(NULL,
+                 &req,
+                 "test_dir_target/marker",
+                 UV_FS_O_WRONLY | UV_FS_O_CREAT,
+                 S_IWUSR | S_IRUSR,
+                 NULL);
+  ASSERT_GE(r, 0);
+  fd = r;
+  uv_fs_req_cleanup(&req);
+  r = uv_fs_close(NULL, &req, fd, NULL);
+  ASSERT_OK(r);
+  uv_fs_req_cleanup(&req);
+
+  snprintf(target, sizeof(target), "%s\\test_dir_target", cwd);
+  snprintf(substitute, sizeof(substitute), "\\??\\Global\\%s", target);
+  snprintf(expected, sizeof(expected), "\\\\?\\Global\\%s", target);
+  utf8_to_wchar(substitute, substitute_w, ARRAY_SIZE(substitute_w));
+  utf8_to_wchar(target, target_w, ARRAY_SIZE(target_w));
+
+  error = set_mount_point(L"test_dir_junction", substitute_w, target_w);
+  if (error == ERROR_ACCESS_DENIED || error == ERROR_PRIVILEGE_NOT_HELD) {
+    rmdir("test_dir_junction");
+    unlink("test_dir_target/marker");
+    rmdir("test_dir_target");
+    RETURN_SKIP("no permission to set reparse points");
+  }
+  ASSERT_EQ(error, ERROR_SUCCESS);
+
+  /* readlink returns the equivalent win32 spelling of the substitute name. */
+  r = uv_fs_readlink(NULL, &req, "test_dir_junction", NULL);
+  ASSERT_OK(r);
+  ASSERT_STR_EQ(req.ptr, expected);
+  uv_fs_req_cleanup(&req);
+
+  /* lstat classifies the junction as a symlink. */
+  r = uv_fs_lstat(NULL, &req, "test_dir_junction", NULL);
+  ASSERT_OK(r);
+  ASSERT(((uv_stat_t*)req.ptr)->st_mode & S_IFLNK);
+  ASSERT_EQ(((uv_stat_t*)req.ptr)->st_size, strlen(expected));
+  uv_fs_req_cleanup(&req);
+
+  /* The returned path is directly usable. */
+  snprintf(marker, sizeof(marker), "%s\\marker", expected);
+  utf8_to_wchar(marker, marker_w, ARRAY_SIZE(marker_w));
+  handle = CreateFileW(marker_w,
+                       GENERIC_READ,
+                       FILE_SHARE_READ,
+                       NULL,
+                       OPEN_EXISTING,
+                       0,
+                       NULL);
+  ASSERT_PTR_NE(handle, INVALID_HANDLE_VALUE);
+  CloseHandle(handle);
+
+  /* Non-drive substitute names are still rejected. */
+  error = set_mount_point(
+      L"test_dir_junction",
+      L"\\??\\Volume{00000000-0000-0000-0000-000000000000}\\",
+      L"");
+  ASSERT_EQ(error, ERROR_SUCCESS);
+
+  r = uv_fs_readlink(NULL, &req, "test_dir_junction", NULL);
+  ASSERT_EQ(r, UV_EINVAL);
+  ASSERT_EQ(uv_fs_get_system_error(&req), ERROR_SYMLINK_NOT_SUPPORTED);
+  uv_fs_req_cleanup(&req);
+
+  /* clean-up */
+  r = uv_fs_rmdir(NULL, &req, "test_dir_junction", NULL);
+  ASSERT_OK(r);
+  uv_fs_req_cleanup(&req);
+  unlink("test_dir_target/marker");
+  rmdir("test_dir_target");
+
+  MAKE_VALGRIND_HAPPY(loop);
+  return 0;
+}
+
 TEST_IMPL(fs_lstat_windows_store_apps) {
   uv_loop_t* loop;
   char localappdata[MAX_PATH];
