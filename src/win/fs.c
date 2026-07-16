@@ -1993,7 +1993,8 @@ static DWORD fs__stat_directory(WCHAR* path,
   UNICODE_STRING FileMask;
   size_t len;
   size_t split;
-  WCHAR splitchar;
+  WCHAR splitchar = L'\0';
+  WCHAR drive_root[8];
   int includes_name;
 
   /* AKA strtok or wcscspn, in reverse. */
@@ -2013,12 +2014,25 @@ static DWORD fs__stat_directory(WCHAR* path,
   if (split == 0 && includes_name) {
     path_dirpath = L".";
   /* If there is a slash or a backslash */
-  } else if (path[split - 1] == L'\\' || path[split - 1] == L'/') {
+  } else if (split > 0 &&
+             (path[split - 1] == L'\\' || path[split - 1] == L'/')) {
     path_dirpath = path;
     /* If there is no filename, consider it as a relative folder path */
     if (!includes_name) {
       split = len;
     /* Else, split it */
+    } else if (split == 1) {
+      /* "\name": keep the separator; it means the current drive's root. */
+      drive_root[0] = path[0];
+      drive_root[1] = L'\0';
+      path_dirpath = drive_root;
+    } else if (split >= 3 && split <= 7 && path[split - 2] == L':') {
+      /* Splitting "X:\name" (or "\\?\X:\name") must keep the root's
+       * backslash: "X:" alone is drive-relative (the drive's current
+       * directory), not the root, and "\\?\X:" opens the volume device. */
+      memcpy(drive_root, path, split * sizeof(WCHAR));
+      drive_root[split] = L'\0';
+      path_dirpath = drive_root;
     } else {
       splitchar = path[split - 1];
       path[split - 1] = L'\0';
@@ -2146,7 +2160,8 @@ static DWORD fs__stat_directory(WCHAR* path,
   ret_error = 0;
 
 cleanup:
-  if (split != 0)
+  /* Restore the path only if it was actually split. */
+  if (splitchar != L'\0')
     path[split - 1] = splitchar;
   if (handle != INVALID_HANDLE_VALUE)
     CloseHandle(handle);
@@ -2977,6 +2992,7 @@ static void fs__readlink(uv_fs_t* req) {
 
 static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
   int r;
+  DWORD err;
   DWORD w_realpath_len;
   WCHAR* w_realpath_ptr = NULL;
   WCHAR* w_realpath_buf;
@@ -2995,8 +3011,9 @@ static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
 
   if (GetFinalPathNameByHandleW(
           handle, w_realpath_ptr, w_realpath_len, VOLUME_NAME_DOS) == 0) {
+    err = GetLastError();
     uv__free(w_realpath_buf);
-    SetLastError(ERROR_INVALID_HANDLE);
+    SetLastError(err);
     return -1;
   }
 
@@ -3026,6 +3043,7 @@ static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
 
 static void fs__realpath(uv_fs_t* req) {
   HANDLE handle;
+  DWORD error;
 
   handle = CreateFileW(req->file.pathw,
                        0,
@@ -3041,8 +3059,9 @@ static void fs__realpath(uv_fs_t* req) {
 
   assert(req->ptr == NULL);
   if (fs__realpath_handle(handle, (char**) &req->ptr) == -1) {
+    error = GetLastError();
     CloseHandle(handle);
-    SET_REQ_WIN32_ERROR(req, GetLastError());
+    SET_REQ_WIN32_ERROR(req, error);
     return;
   }
 
