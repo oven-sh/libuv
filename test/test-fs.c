@@ -1653,6 +1653,8 @@ TEST_IMPL(fs_fstat_st_dev) {
   char* test_file = "tmp_st_dev";
   char* symlink_file = "tmp_st_dev_link";
 
+  RETURN_SKIP_IN_APPCONTAINER("symlink creation requires elevated privilege");
+
   unlink(test_file);
   unlink(symlink_file);
 
@@ -2589,6 +2591,7 @@ TEST_IMPL(fs_symlink_dir) {
 }
 
 TEST_IMPL(fs_symlink_junction) {
+  RETURN_SKIP_IN_APPCONTAINER("junction lstat not supported");
   return test_symlink_dir_impl(UV_FS_SYMLINK_JUNCTION);
 }
 
@@ -4626,6 +4629,8 @@ TEST_IMPL(fs_open_readonly_acl) {
     uv_passwd_t pwd;
     uv_fs_t req;
     int r;
+
+    RETURN_SKIP_IN_APPCONTAINER("cannot modify file ACLs");
 
     /*
         Based on Node.js test from

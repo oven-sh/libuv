@@ -50,9 +50,9 @@
 #define TEST_PORT_3 9125
 
 #ifdef _WIN32
-# define TEST_PIPENAME "\\\\.\\pipe\\uv-test"
-# define TEST_PIPENAME_2 "\\\\.\\pipe\\uv-test2"
-# define TEST_PIPENAME_3 "\\\\.\\pipe\\uv-test3"
+# define TEST_PIPENAME "\\\\.\\pipe\\LOCAL\\uv-test"
+# define TEST_PIPENAME_2 "\\\\.\\pipe\\LOCAL\\uv-test2"
+# define TEST_PIPENAME_3 "\\\\.\\pipe\\LOCAL\\uv-test3"
 #else
 # define TEST_PIPENAME "uv-test-sock"
 # define TEST_PIPENAME_2 "uv-test-sock2"
@@ -291,6 +291,14 @@ typedef enum {
 /* Format big numbers nicely. */
 char* fmt(char (*buf)[32], double d);
 
+#if defined(__clang__) ||                                \
+    defined(__GNUC__) ||                                 \
+    defined(__INTEL_COMPILER)
+# define UNUSED __attribute__((unused))
+#else
+# define UNUSED
+#endif
+
 /* Reserved test exit codes. */
 enum test_status {
   TEST_OK = 0,
@@ -308,6 +316,31 @@ enum test_status {
     fflush(stderr);                                                           \
     return TEST_SKIP;                                                         \
   } while (0)
+
+#ifdef _WIN32
+UNUSED static int is_in_appcontainer(void) {
+  HANDLE token;
+  DWORD ac;
+  DWORD len;
+  int ok;
+
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    return 0;
+  ac = 0;
+  len = sizeof(ac);
+  ok = GetTokenInformation(token, TokenIsAppContainer, &ac, len, &len);
+  CloseHandle(token);
+  return ok && ac != 0;
+}
+
+# define RETURN_SKIP_IN_APPCONTAINER(reason)                                  \
+  do {                                                                        \
+    if (is_in_appcontainer())                                                 \
+      RETURN_SKIP("AppContainer: " reason);                                   \
+  } while (0)
+#else
+# define RETURN_SKIP_IN_APPCONTAINER(reason) do {} while (0)
+#endif
 
 #if !defined(_WIN32)
 
@@ -328,14 +361,6 @@ enum test_status {
 
 #if !defined(snprintf) && defined(_MSC_VER) && _MSC_VER < 1900
 extern int snprintf(char*, size_t, const char*, ...);
-#endif
-
-#if defined(__clang__) ||                                \
-    defined(__GNUC__) ||                                 \
-    defined(__INTEL_COMPILER)
-# define UNUSED __attribute__((unused))
-#else
-# define UNUSED
 #endif
 
 #if defined(_WIN32)
