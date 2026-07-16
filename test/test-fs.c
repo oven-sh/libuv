@@ -4946,13 +4946,23 @@ TEST_IMPL(fs_stat_locked_root_file) {
   DWORD cwd_len;
   WIN32_FIND_DATAA find_data;
   HANDLE find;
+  char drive;
+  char root_path[] = "C:\\pagefile.sys";
+  char prefixed_path[] = "\\\\?\\C:\\pagefile.sys";
 
   /* GetFileAttributes takes the same locked-open path under test, so probe
-   * existence through the directory listing instead. */
-  find = FindFirstFileA("C:\\pagefile.sys", &find_data);
+   * existence through the directory listing instead. GitHub-hosted runners
+   * keep the pagefile on D:, so try both. */
+  for (drive = 'C'; drive <= 'D'; drive++) {
+    root_path[0] = drive;
+    find = FindFirstFileA(root_path, &find_data);
+    if (find != INVALID_HANDLE_VALUE)
+      break;
+  }
   if (find == INVALID_HANDLE_VALUE)
-    RETURN_SKIP("no C:\\pagefile.sys on this host");
+    RETURN_SKIP("no pagefile.sys on C: or D:");
   FindClose(find);
+  prefixed_path[4] = drive;
 
   /* A 7-byte decoy in the cwd satisfied the old drive-relative search. */
   decoy = fopen("pagefile.sys", "wb");
@@ -4961,13 +4971,13 @@ TEST_IMPL(fs_stat_locked_root_file) {
     ASSERT_OK(fclose(decoy));
   }
 
-  r = uv_fs_stat(NULL, &stat_req, "C:\\pagefile.sys", NULL);
+  r = uv_fs_stat(NULL, &stat_req, root_path, NULL);
   ASSERT_OK(r);
   ASSERT_NE(7, (int) stat_req.statbuf.st_size);
   ASSERT_GT(stat_req.statbuf.st_size, 0);
   uv_fs_req_cleanup(&stat_req);
 
-  r = uv_fs_stat(NULL, &stat_req, "\\\\?\\C:\\pagefile.sys", NULL);
+  r = uv_fs_stat(NULL, &stat_req, prefixed_path, NULL);
   ASSERT_OK(r);
   ASSERT_GT(stat_req.statbuf.st_size, 0);
   uv_fs_req_cleanup(&stat_req);
@@ -4975,7 +4985,7 @@ TEST_IMPL(fs_stat_locked_root_file) {
   /* Rooted spelling resolves against the current drive. */
   cwd_len = GetCurrentDirectoryA(sizeof(cwd), cwd);
   if (cwd_len >= 2 && cwd_len < sizeof(cwd) &&
-      (cwd[0] == 'C' || cwd[0] == 'c') && cwd[1] == ':') {
+      (cwd[0] & ~0x20) == drive && cwd[1] == ':') {
     r = uv_fs_stat(NULL, &stat_req, "\\pagefile.sys", NULL);
     ASSERT_OK(r);
     ASSERT_NE(7, (int) stat_req.statbuf.st_size);

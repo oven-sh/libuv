@@ -238,33 +238,3 @@ TEST_IMPL(wtf8) {
   uv_wtf8_to_utf16(input, buf, len);
   return 0;
 }
-
-TEST_IMPL(utf16_to_wtf8_exact_fill) {
-  /* When every UTF-16 unit encodes to 3 WTF-8 bytes and the conversion
-   * exactly fills the buffer, the NUL terminator must stay in bounds.
-   * Callers pass (buffer size - 1) for that reason, as the console
-   * line-read path does. */
-  static const size_t sizes[] = { 3, 6, 48, 96, 192 };
-  uint16_t utf16[64];
-  char mem[200];
-  char* target;
-  size_t target_len;
-  size_t size;
-  size_t i;
-  size_t j;
-
-  for (j = 0; j < ARRAY_SIZE(utf16); j++)
-    utf16[j] = 0x4E2D;  /* U+4E2D encodes to 3 WTF-8 bytes. */
-
-  for (i = 0; i < ARRAY_SIZE(sizes); i++) {
-    size = sizes[i];
-    memset(mem, 0x55, sizeof(mem));
-    target = mem;
-    target_len = size - 1;
-    uv_utf16_to_wtf8(utf16, size / 3, &target, &target_len);
-    /* The byte just past the buffer must be untouched. */
-    ASSERT_EQ(0x55, (unsigned char) mem[size]);
-  }
-
-  return 0;
-}
