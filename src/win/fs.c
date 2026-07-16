@@ -3043,6 +3043,7 @@ static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
 
 static void fs__realpath(uv_fs_t* req) {
   HANDLE handle;
+  DWORD error;
 
   handle = CreateFileW(req->file.pathw,
                        0,
@@ -3058,7 +3059,7 @@ static void fs__realpath(uv_fs_t* req) {
 
   assert(req->ptr == NULL);
   if (fs__realpath_handle(handle, (char**) &req->ptr) == -1) {
-    DWORD error = GetLastError();
+    error = GetLastError();
     CloseHandle(handle);
     SET_REQ_WIN32_ERROR(req, error);
     return;
