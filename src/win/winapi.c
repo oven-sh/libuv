@@ -35,6 +35,9 @@ sNtQueryVolumeInformationFile pNtQueryVolumeInformationFile;
 sNtQueryDirectoryFile pNtQueryDirectoryFile;
 sNtQuerySystemInformation pNtQuerySystemInformation;
 sNtQueryInformationProcess pNtQueryInformationProcess;
+sNtCreateWaitCompletionPacket pNtCreateWaitCompletionPacket;
+sNtAssociateWaitCompletionPacket pNtAssociateWaitCompletionPacket;
+sNtCancelWaitCompletionPacket pNtCancelWaitCompletionPacket;
 
 /* Powrprof.dll function pointer */
 sPowerRegisterSuspendResumeNotification pPowerRegisterSuspendResumeNotification;
@@ -70,6 +73,9 @@ void uv__winapi_init(void) {
     sNtQueryDirectoryFile pNtQueryDirectoryFile;
     sNtQuerySystemInformation pNtQuerySystemInformation;
     sNtQueryInformationProcess pNtQueryInformationProcess;
+    sNtCreateWaitCompletionPacket pNtCreateWaitCompletionPacket;
+    sNtAssociateWaitCompletionPacket pNtAssociateWaitCompletionPacket;
+    sNtCancelWaitCompletionPacket pNtCancelWaitCompletionPacket;
     sPowerRegisterSuspendResumeNotification pPowerRegisterSuspendResumeNotification;
     sProcessPrng pProcessPrng;
     sSetWinEventHook pSetWinEventHook;
@@ -132,6 +138,15 @@ void uv__winapi_init(void) {
   if (pNtQueryInformationProcess == NULL) {
     uv_fatal_error(GetLastError(), "GetProcAddress");
   }
+
+  u.proc = GetProcAddress(ntdll_module, "NtCreateWaitCompletionPacket");
+  pNtCreateWaitCompletionPacket = u.pNtCreateWaitCompletionPacket;
+
+  u.proc = GetProcAddress(ntdll_module, "NtAssociateWaitCompletionPacket");
+  pNtAssociateWaitCompletionPacket = u.pNtAssociateWaitCompletionPacket;
+
+  u.proc = GetProcAddress(ntdll_module, "NtCancelWaitCompletionPacket");
+  pNtCancelWaitCompletionPacket = u.pNtCancelWaitCompletionPacket;
 
   powrprof_module = LoadLibraryExA("powrprof.dll",
                                    NULL,

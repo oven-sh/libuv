@@ -437,6 +437,10 @@ struct uv__loop_internal_fields_s {
   struct uv__iou iou;
   void* inv;  /* used by uv__platform_invalidate_fd() */
 #endif  /* __linux__ */
+#ifdef _WIN32
+  void* hrtimer;       /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION or NULL */
+  void* hrtimer_pkt;   /* NtCreateWaitCompletionPacket handle or NULL */
+#endif  /* _WIN32 */
 };
 
 #if defined(_WIN32)

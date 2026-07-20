@@ -4657,9 +4657,36 @@ typedef NTSTATUS (NTAPI *sNtQueryInformationProcess)
                   ULONG Length,
                   PULONG ReturnLength);
 
+typedef NTSTATUS (NTAPI *sNtCreateWaitCompletionPacket)
+                 (PHANDLE WaitCompletionPacketHandle,
+                  ACCESS_MASK DesiredAccess,
+                  PVOID ObjectAttributes);
+
+typedef NTSTATUS (NTAPI *sNtAssociateWaitCompletionPacket)
+                 (HANDLE WaitCompletionPacketHandle,
+                  HANDLE IoCompletionHandle,
+                  HANDLE TargetObjectHandle,
+                  PVOID KeyContext,
+                  PVOID ApcContext,
+                  NTSTATUS IoStatus,
+                  ULONG_PTR IoStatusInformation,
+                  PBOOLEAN AlreadySignaled);
+
+typedef NTSTATUS (NTAPI *sNtCancelWaitCompletionPacket)
+                 (HANDLE WaitCompletionPacketHandle,
+                  BOOLEAN RemoveSignaledPacket);
+
 /*
  * Kernel32 headers
  */
+#ifndef CREATE_WAITABLE_TIMER_MANUAL_RESET
+# define CREATE_WAITABLE_TIMER_MANUAL_RESET 0x00000001
+#endif
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+# define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
 #ifndef FILE_SKIP_COMPLETION_PORT_ON_SUCCESS
 # define FILE_SKIP_COMPLETION_PORT_ON_SUCCESS 0x1
 #endif
@@ -4813,6 +4840,9 @@ extern sNtQueryVolumeInformationFile pNtQueryVolumeInformationFile;
 extern sNtQueryDirectoryFile pNtQueryDirectoryFile;
 extern sNtQuerySystemInformation pNtQuerySystemInformation;
 extern sNtQueryInformationProcess pNtQueryInformationProcess;
+extern sNtCreateWaitCompletionPacket pNtCreateWaitCompletionPacket;
+extern sNtAssociateWaitCompletionPacket pNtAssociateWaitCompletionPacket;
+extern sNtCancelWaitCompletionPacket pNtCancelWaitCompletionPacket;
 
 /* Powrprof.dll function pointer */
 extern sPowerRegisterSuspendResumeNotification pPowerRegisterSuspendResumeNotification;

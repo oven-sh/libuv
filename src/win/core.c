@@ -224,6 +224,45 @@ static void uv__init(void) {
 }
 
 
+/* Per-loop: create a high-res waitable timer + wait-completion packet so
+ * uv__poll can wake at sub-ms precision (see the hrtimer arm there). On
+ * pre-Win10-1803 either the Nt* pointers or the HIGH_RESOLUTION flag are
+ * absent; hrtimer stays NULL and uv__poll keeps its plain GQCS ms wait. */
+static void uv__hrtimer_init(uv__loop_internal_fields_t* lfields) {
+  HANDLE pkt;
+  if (pNtCreateWaitCompletionPacket == NULL ||
+      pNtAssociateWaitCompletionPacket == NULL ||
+      pNtCancelWaitCompletionPacket == NULL)
+    return;
+  lfields->hrtimer = CreateWaitableTimerExW(
+      NULL,
+      NULL,
+      CREATE_WAITABLE_TIMER_MANUAL_RESET |
+          CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+      SYNCHRONIZE | TIMER_QUERY_STATE | TIMER_MODIFY_STATE);
+  if (lfields->hrtimer == NULL)
+    return;
+  pkt = NULL;
+  if (!NT_SUCCESS(pNtCreateWaitCompletionPacket(&pkt, GENERIC_ALL, NULL)) ||
+      pkt == NULL) {
+    CloseHandle(lfields->hrtimer);
+    lfields->hrtimer = NULL;
+    return;
+  }
+  lfields->hrtimer_pkt = pkt;
+}
+
+
+static void uv__hrtimer_close(uv__loop_internal_fields_t* lfields) {
+  if (lfields->hrtimer_pkt != NULL) {
+    pNtCancelWaitCompletionPacket(lfields->hrtimer_pkt, FALSE);
+    CloseHandle(lfields->hrtimer_pkt);
+  }
+  if (lfields->hrtimer != NULL)
+    CloseHandle(lfields->hrtimer);
+}
+
+
 int uv_loop_init(uv_loop_t* loop) {
   uv__loop_internal_fields_t* lfields;
   struct heap* timer_heap;
@@ -300,6 +339,8 @@ int uv_loop_init(uv_loop_t* loop) {
   if (err)
     goto fail_async_init;
 
+  uv__hrtimer_init(lfields);
+
   return 0;
 
 fail_async_init:
@@ -367,6 +408,7 @@ void uv__loop_close(uv_loop_t* loop) {
   loop->timer_heap = NULL;
 
   lfields = uv__get_internal_fields(loop);
+  uv__hrtimer_close(lfields);
   uv_mutex_destroy(&lfields->loop_metrics.lock);
   uv__free(lfields);
   loop->internal_fields = NULL;
@@ -462,6 +504,33 @@ static void uv__poll(uv_loop_t* loop, DWORD timeout) {
      * of events in the callback were waiting when poll was called.
      */
     lfields->current_timeout = timeout;
+
+    /* Arm the high-res waitable timer and associate it with this loop's IOCP;
+     * it posts a NULL-overlapped completion (already treated as a pure wakeup
+     * below) so GQCS can block with INFINITE and skip its ~15.6ms-tick ms wait. */
+    if (timeout != 0 && timeout != INFINITE && lfields->hrtimer != NULL) {
+      LARGE_INTEGER due;
+      BOOLEAN signaled;
+      due.QuadPart = -(LONGLONG) timeout * 10000;  /* relative, 100ns units */
+      signaled = FALSE;
+      /* STATUS_PENDING => packet is mid-delivery; re-associate would fail,
+       * so skip the arm this round and let the GQCS ms timeout apply. */
+      if (pNtCancelWaitCompletionPacket(lfields->hrtimer_pkt, TRUE)
+              != STATUS_PENDING &&
+          SetWaitableTimer(lfields->hrtimer, &due, 0, NULL, NULL, FALSE) &&
+          NT_SUCCESS(pNtAssociateWaitCompletionPacket(lfields->hrtimer_pkt,
+                                                      loop->iocp,
+                                                      lfields->hrtimer,
+                                                      NULL,
+                                                      NULL,
+                                                      0,
+                                                      0,
+                                                      &signaled))) {
+        /* AlreadySignaled => timer fired between SetWaitableTimer and the
+         * associate; the packet is already queued so GQCS won't block. */
+        timeout = signaled ? 0 : INFINITE;
+      }
+    }
 
     success = GetQueuedCompletionStatusEx(loop->iocp,
                                           overlappeds,
