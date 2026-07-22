@@ -545,7 +545,7 @@ static int uv__set_pipe_handle(uv_loop_t* loop,
                                       sizeof(mode_info),
                                       FileModeInformation);
   if (nt_status != STATUS_SUCCESS) {
-    return uv_translate_sys_error(err);
+    return uv_translate_sys_error(pRtlNtStatusToDosError(nt_status));
   }
 
   if (mode_info.Mode & FILE_SYNCHRONOUS_IO_ALERT ||
