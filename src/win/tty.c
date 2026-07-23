@@ -1262,6 +1262,7 @@ static int uv__tty_move_caret(uv_tty_t* handle, int x, unsigned char x_relative,
  retry:
   if (!GetConsoleScreenBufferInfo(handle->handle, &info)) {
     *error = GetLastError();
+    return -1;
   }
 
   pos = uv__tty_make_real_coord(handle, &info, x, x_relative, y, y_relative);
