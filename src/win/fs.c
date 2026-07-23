@@ -316,7 +316,11 @@ static int fs__readlink_handle(HANDLE handle,
   }
 
   assert(target_ptr == NULL || *target_ptr == NULL);
-  return uv_utf16_to_wtf8(w_target, w_target_len, target_ptr, target_len_ptr);
+  if (uv_utf16_to_wtf8(w_target, w_target_len, target_ptr, target_len_ptr) != 0) {
+    SetLastError(ERROR_OUTOFMEMORY);
+    return -1;
+  }
+  return 0;
 }
 
 
@@ -709,7 +713,7 @@ LONG fs__filemap_ex_filter(LONG excode, PEXCEPTION_POINTERS pep,
   assert(perror != NULL);
   if (pep != NULL && pep->ExceptionRecord != NULL &&
       pep->ExceptionRecord->NumberParameters >= 3) {
-    NTSTATUS status = (NTSTATUS)pep->ExceptionRecord->ExceptionInformation[3];
+    NTSTATUS status = (NTSTATUS)pep->ExceptionRecord->ExceptionInformation[2];
     *perror = pRtlNtStatusToDosError(status);
     if (*perror != ERROR_SUCCESS) {
       return EXCEPTION_EXECUTE_HANDLER;
@@ -3038,7 +3042,11 @@ static ssize_t fs__realpath_handle(HANDLE handle, char** realpath_ptr) {
   assert(*realpath_ptr == NULL);
   r = uv_utf16_to_wtf8(w_realpath_ptr, w_realpath_len, realpath_ptr, NULL);
   uv__free(w_realpath_buf);
-  return r;
+  if (r != 0) {
+    SetLastError(ERROR_OUTOFMEMORY);
+    return -1;
+  }
+  return 0;
 }
 
 static void fs__realpath(uv_fs_t* req) {

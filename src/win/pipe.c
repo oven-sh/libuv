@@ -398,10 +398,10 @@ int uv_pipe(uv_file fds[2], int read_flags, int write_flags) {
                              0,
                              (uintptr_t) &fds[0]);
   if (err != 0)
-    return err;
+    return uv_translate_sys_error(err);
   temp[0] = _open_osfhandle((intptr_t) readh, 0);
   if (temp[0] == -1) {
-    if (errno == UV_EMFILE)
+    if (errno == EMFILE)
       err = UV_EMFILE;
     else
       err = UV_UNKNOWN;
@@ -411,7 +411,7 @@ int uv_pipe(uv_file fds[2], int read_flags, int write_flags) {
   }
   temp[1] = _open_osfhandle((intptr_t) writeh, 0);
   if (temp[1] == -1) {
-    if (errno == UV_EMFILE)
+    if (errno == EMFILE)
       err = UV_EMFILE;
     else
       err = UV_UNKNOWN;
@@ -2266,7 +2266,7 @@ void uv__process_pipe_write_req(uv_loop_t* loop, uv_pipe_t* handle,
     uv__free(coalesced_write);
   }
   if (req->cb) {
-    req->cb(req, uv_translate_sys_error(err));
+    req->cb(req, uv_translate_write_sys_error(err));
   }
 
   handle->stream.conn.write_reqs_pending--;
