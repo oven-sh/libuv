@@ -1144,8 +1144,6 @@ int uv_spawn(uv_loop_t* loop,
       err = GetLastError();
       if (err != ERROR_ACCESS_DENIED) {
         TerminateProcess(info.hProcess, 1);
-        CloseHandle(info.hProcess);
-        CloseHandle(info.hThread);
         goto done;
       }
       err = 0;
