@@ -1142,10 +1142,8 @@ int uv_spawn(uv_loop_t* loop,
        * of aborting the whole application.
        */
       err = GetLastError();
-      if (err != ERROR_ACCESS_DENIED) {
-        TerminateProcess(info.hProcess, 1);
-        goto done;
-      }
+      if (err != ERROR_ACCESS_DENIED)
+        goto done_created;
       err = 0;
     }
   }
@@ -1153,8 +1151,7 @@ int uv_spawn(uv_loop_t* loop,
   if (process_flags & CREATE_SUSPENDED) {
     if (ResumeThread(info.hThread) == ((DWORD)-1)) {
       err = GetLastError();
-      TerminateProcess(info.hProcess, 1);
-      goto done;
+      goto done_created;
     }
   }
 
@@ -1191,6 +1188,13 @@ int uv_spawn(uv_loop_t* loop,
   uv__handle_start(process);
 
   goto done_uv;
+
+  /* The process was created but a later step failed: kill it and release
+   * the handles CreateProcessW returned. */
+ done_created:
+  TerminateProcess(info.hProcess, 1);
+  CloseHandle(info.hProcess);
+  CloseHandle(info.hThread);
 
   /* Cleanup, whether we succeeded or failed. */
  done:
