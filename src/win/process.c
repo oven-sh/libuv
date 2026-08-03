@@ -1137,10 +1137,16 @@ int uv_spawn(uv_loop_t* loop,
        * establishing a kill-child-on-parent-exit relationship, otherwise
        * there would be no way for libuv applications run under job control
        * to spawn processes at all.
+       *
+       * On any other error, terminate the child and fail this spawn instead
+       * of aborting the whole application.
        */
-      DWORD err = GetLastError();
-      if (err != ERROR_ACCESS_DENIED)
-        uv_fatal_error(err, "AssignProcessToJobObject");
+      err = GetLastError();
+      if (err != ERROR_ACCESS_DENIED) {
+        TerminateProcess(info.hProcess, 1);
+        goto done;
+      }
+      err = 0;
     }
   }
 
