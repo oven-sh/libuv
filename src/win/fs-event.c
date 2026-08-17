@@ -114,7 +114,15 @@ static int uv__split_path(const WCHAR* filename, WCHAR** dir,
       }
     }
 
-    *file = _wcsdup(filename);
+    /* uv_fs_event_stop() releases *file with uv__free(), so it has to come
+     * from uv__malloc() like the other branch: with uv_replace_allocator()
+     * in effect, handing a _wcsdup()'d CRT buffer to the custom free crashes. */
+    *file = (WCHAR*)uv__malloc((len + 1) * sizeof(WCHAR));
+    if (!*file) {
+      uv_fatal_error(ERROR_OUTOFMEMORY, "uv__malloc");
+    }
+    wcsncpy(*file, filename, len);
+    (*file)[len] = L'\0';
   } else {
     if (dir) {
       *dir = (WCHAR*)uv__malloc((i + 2) * sizeof(WCHAR));
