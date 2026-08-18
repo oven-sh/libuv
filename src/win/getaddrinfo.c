@@ -252,6 +252,8 @@ int uv_getaddrinfo(uv_loop_t* loop,
   size_t hintoff = 0;
   ssize_t rc;
 
+  uv__winsock_ensure();
+
   if (req == NULL || (node == NULL && service == NULL)) {
     return UV_EINVAL;
   }

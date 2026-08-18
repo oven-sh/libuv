@@ -198,6 +198,11 @@ int uv__signal_start(uv_signal_t* handle,
   if (signum <= 0 || signum >= NSIG)
     return UV_EINVAL;
 
+  /* SIGWINCH is synthesized by the console resize watcher, which is started
+   * on demand. */
+  if (signum == SIGWINCH)
+    uv__console_ensure();
+
   /* Short circuit: if the signal watcher is already watching {signum} don't go
    * through the process of deregistering and registering the handler.
    * Additionally, this avoids pending signals getting lost in the (small) time

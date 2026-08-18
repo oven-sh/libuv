@@ -154,6 +154,7 @@ void uv__pipe_endgame(uv_loop_t* loop, uv_pipe_t* handle);
  * TTY
  */
 void uv__console_init(void);
+void uv__console_ensure(void);
 
 int uv__tty_read_start(uv_tty_t* handle, uv_alloc_cb alloc_cb,
     uv_read_cb read_cb);
@@ -294,7 +295,7 @@ void uv__winapi_init(void);
 /*
  * Winsock utility functions
  */
-void uv__winsock_init(void);
+void uv__winsock_ensure(void);
 
 int uv__ntstatus_to_winsock_error(NTSTATUS status);
 
@@ -328,7 +329,7 @@ void uv__wake_all_loops(void);
 /*
  * Init system wake-up detection
  */
-void uv__init_detect_system_wakeup(void);
+void uv__detect_system_wakeup_ensure(void);
 
 int uv_translate_write_sys_error(int sys_errno);
 

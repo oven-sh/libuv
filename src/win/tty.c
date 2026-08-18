@@ -164,11 +164,31 @@ static BOOL uv__need_check_vterm_state = TRUE;
 static uv_tty_vtermstate_t uv__vterm_state = UV_TTY_UNSUPPORTED;
 static void uv__determine_vterm_state(HANDLE handle);
 
-void uv__console_init(void) {
-  DWORD dwMode;
+static uv_once_t uv__console_init_guard = UV_ONCE_INIT;
+static void uv__console_init_impl(void);
 
+/* Process-startup part: just the output lock. Opening CONOUT$/CONIN$, the
+ * console round-trips and the resize watcher threads are deferred until the
+ * first tty handle or SIGWINCH watcher exists (uv__console_ensure). */
+void uv__console_init(void) {
   if (uv_sem_init(&uv_tty_output_lock, 1))
     abort();
+}
+
+void uv__console_ensure(void) {
+  uv_once(&uv__console_init_guard, uv__console_init_impl);
+}
+
+static void uv__console_init_impl(void) {
+  DWORD dwMode;
+
+  if (pSetWinEventHook == NULL) {
+    HMODULE user32_module = LoadLibraryExA("user32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (user32_module != NULL)
+      pSetWinEventHook = (sSetWinEventHook) (void (*)(void))
+          GetProcAddress(user32_module, "SetWinEventHook");
+  }
+
   uv__tty_console_handle_out = CreateFileW(L"CONOUT$",
                                            GENERIC_READ | GENERIC_WRITE,
                                            FILE_SHARE_WRITE,
@@ -211,6 +231,7 @@ int uv_tty_init(uv_loop_t* loop, uv_tty_t* tty, uv_file fd, int unused) {
   (void)unused;
 
   uv__once_init();
+  uv__console_ensure();
   handle = (HANDLE) uv__get_osfhandle(fd);
   if (handle == INVALID_HANDLE_VALUE)
     return UV_EBADF;
