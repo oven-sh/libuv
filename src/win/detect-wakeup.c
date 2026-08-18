@@ -51,7 +51,7 @@ static void uv__register_system_resume_callback(void) {
   _HPOWERNOTIFY registration_handle;
 
   if (pPowerRegisterSuspendResumeNotification == NULL) {
-    HMODULE powrprof_module = LoadLibraryExA("powrprof.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE powrprof_module = LoadLibraryExW(L"powrprof.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (powrprof_module != NULL)
       pPowerRegisterSuspendResumeNotification =
           (sPowerRegisterSuspendResumeNotification) (void (*)(void))

@@ -145,9 +145,9 @@ void uv__winapi_init(void) {
   u.proc = GetProcAddress(ntdll_module, "NtCancelWaitCompletionPacket");
   pNtCancelWaitCompletionPacket = u.pNtCancelWaitCompletionPacket;
 
-  bcryptprimitives_module = LoadLibraryExA("bcryptprimitives.dll",
-                                           NULL,
-                                           LOAD_LIBRARY_SEARCH_SYSTEM32);
+  bcryptprimitives_module = LoadLibraryExW(L"bcryptprimitives.dll",
+                                            NULL,
+                                            LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (bcryptprimitives_module != NULL) {
     u.proc = GetProcAddress(bcryptprimitives_module, "ProcessPrng");
     pProcessPrng = u.pProcessPrng;
