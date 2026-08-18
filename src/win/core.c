@@ -204,9 +204,6 @@ static void uv__init(void) {
    */
   uv__winapi_init();
 
-  /* Initialize winsock */
-  uv__winsock_init();
-
   /* Initialize FS */
   uv__fs_init();
 
@@ -218,9 +215,6 @@ static void uv__init(void) {
 
   /* Initialize utilities */
   uv__util_init();
-
-  /* Initialize system wakeup detection */
-  uv__init_detect_system_wakeup();
 }
 
 
@@ -532,6 +526,8 @@ static void uv__poll(uv_loop_t* loop, DWORD timeout) {
       }
     }
 
+    if (timeout != 0)
+      uv__detect_system_wakeup_ensure();
     success = GetQueuedCompletionStatusEx(loop->iocp,
                                           overlappeds,
                                           ARRAY_SIZE(overlappeds),

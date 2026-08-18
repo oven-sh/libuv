@@ -56,9 +56,6 @@ sGetFileInformationByName pGetFileInformationByName;
 
 void uv__winapi_init(void) {
   HMODULE ntdll_module;
-  HMODULE powrprof_module;
-  HMODULE user32_module;
-  HMODULE ws2_32_module;
   HMODULE bcryptprimitives_module;
   HMODULE api_win_core_file_module;
 
@@ -148,34 +145,12 @@ void uv__winapi_init(void) {
   u.proc = GetProcAddress(ntdll_module, "NtCancelWaitCompletionPacket");
   pNtCancelWaitCompletionPacket = u.pNtCancelWaitCompletionPacket;
 
-  powrprof_module = LoadLibraryExA("powrprof.dll",
-                                   NULL,
-                                   LOAD_LIBRARY_SEARCH_SYSTEM32);
-  if (powrprof_module != NULL) {
-    u.proc = GetProcAddress(powrprof_module,
-                            "PowerRegisterSuspendResumeNotification");
-    pPowerRegisterSuspendResumeNotification =
-        u.pPowerRegisterSuspendResumeNotification;
-  }
-
   bcryptprimitives_module = LoadLibraryExA("bcryptprimitives.dll",
                                            NULL,
                                            LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (bcryptprimitives_module != NULL) {
     u.proc = GetProcAddress(bcryptprimitives_module, "ProcessPrng");
     pProcessPrng = u.pProcessPrng;
-  }
-
-  user32_module = GetModuleHandleW(L"user32.dll");
-  if (user32_module != NULL) {
-    u.proc = GetProcAddress(user32_module, "SetWinEventHook");
-    pSetWinEventHook = u.pSetWinEventHook;
-  }
-
-  ws2_32_module = GetModuleHandleW(L"ws2_32.dll");
-  if (ws2_32_module != NULL) {
-    u.proc = GetProcAddress(ws2_32_module, "GetHostNameW");
-    pGetHostNameW = u.pGetHostNameW;
   }
 
   api_win_core_file_module =

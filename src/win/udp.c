@@ -124,6 +124,8 @@ int uv__udp_init_ex(uv_loop_t* loop,
                     uv_udp_t* handle,
                     unsigned flags,
                     int domain) {
+  uv__winsock_ensure();
+
   uv__handle_init(loop, (uv_handle_t*) handle, UV_UDP);
   handle->socket = INVALID_SOCKET;
   handle->reqs_pending = 0;
@@ -912,6 +914,8 @@ int uv_udp_open_ex(uv_udp_t* handle, uv_os_sock_t sock, unsigned int flags) {
   WSAPROTOCOL_INFOW protocol_info;
   int opt_len;
   int err;
+
+  uv__winsock_ensure();
 
   /* Check for bad flags. */
   if (flags & ~(UV_UDP_REUSEADDR | UV_UDP_REUSEPORT))

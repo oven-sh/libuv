@@ -416,6 +416,8 @@ int uv_poll_init_socket(uv_loop_t* loop, uv_poll_t* handle,
   DWORD bytes;
   DWORD yes = 1;
 
+  uv__winsock_ensure();
+
   /* Set the socket to nonblocking mode */
   if (ioctlsocket(socket, FIONBIO, &yes) == SOCKET_ERROR)
     return uv_translate_sys_error(WSAGetLastError());

@@ -111,6 +111,8 @@ int uv_getnameinfo(uv_loop_t* loop,
   if (req == NULL || addr == NULL)
     return UV_EINVAL;
 
+  uv__winsock_ensure();
+
   if (addr->sa_family == AF_INET) {
     memcpy(&req->storage,
            addr,

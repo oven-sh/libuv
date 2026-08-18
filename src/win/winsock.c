@@ -75,7 +75,19 @@ BOOL uv__get_connectex_function(SOCKET socket, LPFN_CONNECTEX* target) {
 
 
 
-void uv__winsock_init(void) {
+static uv_once_t uv__winsock_init_guard = UV_ONCE_INIT;
+static void uv__winsock_init_impl(void);
+
+/* Winsock is initialized on first use rather than at process startup:
+ * WSAStartup, the non-IFS LSP probe below and the ws2_32/mswsock loads that
+ * come with them (htons() in uv_ip4_addr is a ws2_32 import too) cost a few
+ * milliseconds that a process which never touches the network should not
+ * pay. Every entry point that needs Winsock calls this first. */
+void uv__winsock_ensure(void) {
+  uv_once(&uv__winsock_init_guard, uv__winsock_init_impl);
+}
+
+static void uv__winsock_init_impl(void) {
   WSADATA wsa_data;
   int errorno;
   SOCKET dummy;
@@ -91,13 +103,35 @@ void uv__winsock_init(void) {
     abort();
   }
 
-  /* Skip initialization in safe mode without network support */
-  if (1 == GetSystemMetrics(SM_CLEANBOOT)) return;
+  /* Skip initialization in safe mode without network support. This is the
+   * value GetSystemMetrics(SM_CLEANBOOT) reports; reading it directly avoids
+   * loading user32.dll here. */
+  {
+    DWORD option = 0;
+    DWORD size = sizeof(option);
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     L"SYSTEM\\CurrentControlSet\\Control\\SafeBoot\\Option",
+                     L"OptionValue",
+                     RRF_RT_REG_DWORD,
+                     NULL,
+                     &option,
+                     &size) == ERROR_SUCCESS &&
+        option == 1) {
+      return;
+    }
+  }
 
   /* Initialize winsock */
   errorno = WSAStartup(MAKEWORD(2, 2), &wsa_data);
   if (errorno != 0) {
     uv_fatal_error(errorno, "WSAStartup");
+  }
+
+  {
+    HMODULE ws2_32_module = GetModuleHandleW(L"ws2_32.dll");
+    if (ws2_32_module != NULL)
+      pGetHostNameW = (uv_sGetHostNameW) (void (*)(void))
+          GetProcAddress(ws2_32_module, "GetHostNameW");
   }
 
   /* Try to detect non-IFS LSPs */

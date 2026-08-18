@@ -1412,7 +1412,8 @@ int uv_os_gethostname(char* buffer, size_t* size) {
   if (buffer == NULL || size == NULL || *size == 0)
     return UV_EINVAL;
 
-  uv__once_init(); /* Initialize winsock */
+  uv__once_init();
+  uv__winsock_ensure(); /* Initialize winsock */
 
   if (pGetHostNameW == NULL)
     return UV_ENOSYS;

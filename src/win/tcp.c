@@ -222,6 +222,8 @@ static int uv__tcp_set_socket(uv_loop_t* loop,
 int uv_tcp_init_ex(uv_loop_t* loop, uv_tcp_t* handle, unsigned int flags) {
   int domain;
 
+  uv__winsock_ensure();
+
   /* Use the lower 8 bits for the domain */
   domain = flags & 0xFF;
   if (domain != AF_INET && domain != AF_INET6 && domain != AF_UNSPEC)
@@ -1556,6 +1558,8 @@ int uv_tcp_open(uv_tcp_t* handle, uv_os_sock_t sock) {
   int err;
   struct sockaddr_storage saddr;
   int saddr_len;
+
+  uv__winsock_ensure();
 
   /* Detect the address family of the socket. */
   opt_len = (int) sizeof protocol_info;

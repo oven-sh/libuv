@@ -25,11 +25,16 @@
 
 static void uv__register_system_resume_callback(void);
 
-void uv__init_detect_system_wakeup(void) {
+static uv_once_t uv__detect_system_wakeup_guard = UV_ONCE_INIT;
+
+/* Registering the power callback loads powrprof/umpdc and connects an ALPC
+ * port to the power service. It only matters once a loop actually blocks, so
+ * uv__poll arms it before its first wait instead of at process startup. */
+void uv__detect_system_wakeup_ensure(void) {
   /* Try registering system power event callback. This is the cleanest
    * method, but it will only work on Win8 and above.
    */
-  uv__register_system_resume_callback();
+  uv_once(&uv__detect_system_wakeup_guard, uv__register_system_resume_callback);
 }
 
 static ULONG CALLBACK uv__system_resume_callback(PVOID Context,
@@ -45,8 +50,16 @@ static void uv__register_system_resume_callback(void) {
   _DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS recipient;
   _HPOWERNOTIFY registration_handle;
 
-  if (pPowerRegisterSuspendResumeNotification == NULL)
-    return;
+  if (pPowerRegisterSuspendResumeNotification == NULL) {
+    HMODULE powrprof_module = LoadLibraryExA("powrprof.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (powrprof_module != NULL)
+      pPowerRegisterSuspendResumeNotification =
+          (sPowerRegisterSuspendResumeNotification) (void (*)(void))
+              GetProcAddress(powrprof_module,
+                             "PowerRegisterSuspendResumeNotification");
+    if (pPowerRegisterSuspendResumeNotification == NULL)
+      return;
+  }
 
   recipient.Callback = uv__system_resume_callback;
   recipient.Context = NULL;
