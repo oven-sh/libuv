@@ -183,7 +183,7 @@ static void uv__console_init_impl(void) {
   DWORD dwMode;
 
   if (pSetWinEventHook == NULL) {
-    HMODULE user32_module = LoadLibraryExA("user32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE user32_module = LoadLibraryExW(L"user32.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (user32_module != NULL)
       pSetWinEventHook = (sSetWinEventHook) (void (*)(void))
           GetProcAddress(user32_module, "SetWinEventHook");
