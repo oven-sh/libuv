@@ -92,7 +92,23 @@ Data types
              * search for the exact file name before trying variants with
              * extensions like '.exe' or '.cmd'.
              */
-            UV_PROCESS_WINDOWS_FILE_PATH_EXACT_NAME = (1 << 7)
+            UV_PROCESS_WINDOWS_FILE_PATH_EXACT_NAME = (1 << 7),
+            /*
+             * Always create the child process with CREATE_NO_WINDOW: it gets a
+             * new console of its own that has no window, also when it inherits
+             * files or pipes through UV_INHERIT_FD. Ignored with
+             * UV_PROCESS_DETACHED and with a pseudoconsole. This option is only
+             * meaningful on Windows systems. On Unix it is silently ignored.
+             */
+            UV_PROCESS_WINDOWS_CREATE_NO_WINDOW = (1 << 16),
+            /*
+             * Do not assign the child process to the job object that kills it
+             * when the parent process exits. Unlike UV_PROCESS_DETACHED, the
+             * child keeps a console and stays in the parent's process group.
+             * This option is only meaningful on Windows systems. On Unix it is
+             * silently ignored.
+             */
+            UV_PROCESS_WINDOWS_NO_JOB_OBJECT = (1 << 17)
         };
 
 .. c:type:: uv_stdio_container_t

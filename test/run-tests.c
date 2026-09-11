@@ -248,6 +248,45 @@ static int maybe_run_test(int argc, char **argv) {
     return 1;
   }
 
+#ifdef _WIN32
+  if (strcmp(argv[1], "spawn_helper_console_info") == 0) {
+    DWORD pids[2];
+
+    notify_parent_process();
+    printf("console=%d window=%d processes=%lu\n",
+           GetConsoleCP() != 0,
+           GetConsoleWindow() != NULL,
+           GetConsoleProcessList(pids, ARRAY_SIZE(pids)));
+    return 1;
+  }
+
+  if (strcmp(argv[1], "spawn_helper_no_job_object") == 0) {
+    uv_process_t child;
+    uv_process_options_t child_options;
+    char child_exepath[1024];
+    size_t child_exepath_size = sizeof(child_exepath);
+    char* child_args[3];
+
+    notify_parent_process();
+    /* Do not leak our stdout pipe into the child: the parent test reads it
+     * to EOF. */
+    uv_disable_stdio_inheritance();
+
+    ASSERT_OK(uv_exepath(child_exepath, &child_exepath_size));
+    child_args[0] = child_exepath;
+    child_args[1] = "spawn_helper4";
+    child_args[2] = NULL;
+    memset(&child_options, 0, sizeof(child_options));
+    child_options.file = child_exepath;
+    child_options.args = child_args;
+    child_options.flags = UV_PROCESS_WINDOWS_NO_JOB_OBJECT;
+
+    ASSERT_OK(uv_spawn(uv_default_loop(), &child, &child_options));
+    printf("%d\n", child.pid);
+    return 1;
+  }
+#endif  /* _WIN32 */
+
 #ifndef _WIN32
   if (strcmp(argv[1], "spawn_helper_setuid_setgid") == 0) {
     uv_uid_t uid = atoi(argv[2]);
