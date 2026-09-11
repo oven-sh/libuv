@@ -653,7 +653,11 @@ File open constants
     If the path is a symbolic link, fail the open.
 
     .. note::
-        `UV_FS_O_NOFOLLOW` is not supported on Windows.
+        On Windows the open does not fail. When the last component of the path
+        is a symbolic link or a junction, the open returns a handle to the link
+        itself (`FILE_FLAG_OPEN_REPARSE_POINT
+        <https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew>`_)
+        and does not follow it.
 
 .. c:macro:: UV_FS_O_NONBLOCK
 
