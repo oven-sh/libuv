@@ -1168,7 +1168,35 @@ enum uv_process_flags {
    * search for the exact file name before trying variants with
    * extensions like '.exe' or '.cmd'.
    */
-  UV_PROCESS_WINDOWS_FILE_PATH_EXACT_NAME = (1 << 7)
+  UV_PROCESS_WINDOWS_FILE_PATH_EXACT_NAME = (1 << 7),
+  /*
+   * The two flags below are not in upstream libuv. They use high bits so that
+   * they cannot collide with a flag that upstream adds later.
+   */
+  /*
+   * Always create the child process with CREATE_NO_WINDOW: it gets a new
+   * console of its own that has no window. UV_PROCESS_WINDOWS_HIDE and
+   * UV_PROCESS_WINDOWS_HIDE_CONSOLE only do that when no stdio container uses
+   * UV_INHERIT_FD. This flag also does it when the child inherits files or
+   * pipes. Do not pass a handle to the parent's console with it: Windows
+   * points that stdio slot at the new console and the output is lost. Ignored
+   * with UV_PROCESS_DETACHED (the child has no console at all) and with a
+   * pseudoconsole. This option is only meaningful on Windows systems. On Unix
+   * it is silently ignored.
+   */
+  UV_PROCESS_WINDOWS_CREATE_NO_WINDOW = (1 << 16),
+  /*
+   * Do not assign the child process to the job object that kills it when the
+   * parent process exits, so the child can keep running after the parent is
+   * gone. Unlike UV_PROCESS_DETACHED, the child is not created with
+   * DETACHED_PROCESS or CREATE_NEW_PROCESS_GROUP: it keeps a console and stays
+   * in the parent's process group. The exit callback still fires while the
+   * parent is alive, and the child still keeps the parent's event loop alive
+   * unless the parent calls uv_unref() on the child's process handle. This
+   * option is only meaningful on Windows systems. On Unix it is silently
+   * ignored.
+   */
+  UV_PROCESS_WINDOWS_NO_JOB_OBJECT = (1 << 17)
 };
 
 /*

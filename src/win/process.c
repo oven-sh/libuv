@@ -72,7 +72,8 @@ static void uv__init_global_job_handle(void) {
    * giving it to anyone, we're the only process holding a reference to it.
    * That means that if this process exits it is closed and all the processes
    * it contains are killed. All processes created with uv_spawn that are not
-   * spawned with the UV_PROCESS_DETACHED flag are assigned to this job.
+   * spawned with the UV_PROCESS_DETACHED or UV_PROCESS_WINDOWS_NO_JOB_OBJECT
+   * flag are assigned to this job.
    *
    * We're setting the JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK flag so only the
    * processes that we explicitly add are affected, and *their* subprocesses
@@ -923,10 +924,12 @@ int uv_spawn(uv_loop_t* loop,
   assert(!(options->flags & ~(UV_PROCESS_DETACHED |
                               UV_PROCESS_SETGID |
                               UV_PROCESS_SETUID |
+                              UV_PROCESS_WINDOWS_CREATE_NO_WINDOW |
                               UV_PROCESS_WINDOWS_FILE_PATH_EXACT_NAME |
                               UV_PROCESS_WINDOWS_HIDE |
                               UV_PROCESS_WINDOWS_HIDE_CONSOLE |
                               UV_PROCESS_WINDOWS_HIDE_GUI |
+                              UV_PROCESS_WINDOWS_NO_JOB_OBJECT |
                               UV_PROCESS_WINDOWS_VERBATIM_ARGUMENTS)));
 
   err = uv__utf8_to_utf16_alloc(options->file, &application);
@@ -1074,6 +1077,12 @@ int uv_spawn(uv_loop_t* loop,
 
   if (options->pseudoconsole != NULL) {
     process_flags |= EXTENDED_STARTUPINFO_PRESENT;
+  } else if ((options->flags & UV_PROCESS_WINDOWS_CREATE_NO_WINDOW) &&
+             !(options->flags & UV_PROCESS_DETACHED)) {
+    /* The rule below exists for an inherited handle to the parent's console:
+     * with CREATE_NO_WINDOW it ends up pointing at the child's new console.
+     * Files and pipes are not affected, and the caller opted in. */
+    process_flags |= CREATE_NO_WINDOW;
   } else if ((options->flags & UV_PROCESS_WINDOWS_HIDE_CONSOLE) ||
       (options->flags & UV_PROCESS_WINDOWS_HIDE)) {
     /* Avoid creating console window if stdio is not inherited. */
@@ -1123,8 +1132,11 @@ int uv_spawn(uv_loop_t* loop,
   }
 
   /* If the process isn't spawned as detached, assign to the global job object
-   * so windows will kill it when the parent process dies. */
-  if (!(options->flags & UV_PROCESS_DETACHED)) {
+   * so windows will kill it when the parent process dies. The job has
+   * JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, so a child that is not assigned here
+   * does not join it through the parent either. */
+  if (!(options->flags & (UV_PROCESS_DETACHED |
+                          UV_PROCESS_WINDOWS_NO_JOB_OBJECT))) {
     uv_once(&uv_global_job_handle_init_guard_, uv__init_global_job_handle);
 
     if (!AssignProcessToJobObject(uv_global_job_handle_, info.hProcess)) {

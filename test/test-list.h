@@ -528,6 +528,8 @@ TEST_DECLARE   (spawn_with_an_odd_path)
 TEST_DECLARE   (spawn_no_path)
 TEST_DECLARE   (spawn_no_ext)
 TEST_DECLARE   (spawn_path_no_ext)
+TEST_DECLARE   (spawn_windows_create_no_window)
+TEST_DECLARE   (spawn_windows_no_job_object)
 TEST_DECLARE   (ipc_listen_after_bind_twice)
 TEST_DECLARE   (win32_signum_number)
 #else
@@ -1064,6 +1066,8 @@ TASK_LIST_START
   TEST_ENTRY  (spawn_no_path)
   TEST_ENTRY  (spawn_no_ext)
   TEST_ENTRY  (spawn_path_no_ext)
+  TEST_ENTRY  (spawn_windows_create_no_window)
+  TEST_ENTRY  (spawn_windows_no_job_object)
   TEST_ENTRY  (ipc_listen_after_bind_twice)
   TEST_ENTRY  (win32_signum_number)
 #else

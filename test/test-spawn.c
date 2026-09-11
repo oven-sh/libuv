@@ -1484,6 +1484,108 @@ TEST_IMPL(spawn_path_no_ext) {
   MAKE_VALGRIND_HAPPY(uv_default_loop());
   return 0;
 }
+
+
+TEST_IMPL(spawn_windows_create_no_window) {
+  int r;
+  uv_file file;
+  uv_fs_t fs_req;
+  uv_stdio_container_t stdio[2];
+  uv_buf_t buf;
+
+  /* Setup. */
+  unlink("stdout_file");
+
+  init_process_options("spawn_helper_console_info", exit_cb);
+
+  r = uv_fs_open(NULL, &fs_req, "stdout_file", UV_FS_O_CREAT | UV_FS_O_RDWR,
+      S_IRUSR | S_IWUSR, NULL);
+  ASSERT_NE(r, -1);
+  uv_fs_req_cleanup(&fs_req);
+
+  file = r;
+
+  /* stdout is a UV_INHERIT_FD file: UV_PROCESS_WINDOWS_HIDE would not pass
+   * CREATE_NO_WINDOW here. */
+  options.stdio = stdio;
+  options.stdio[0].flags = UV_IGNORE;
+  options.stdio[1].flags = UV_INHERIT_FD;
+  options.stdio[1].data.fd = file;
+  options.stdio_count = 2;
+  options.flags |= UV_PROCESS_WINDOWS_CREATE_NO_WINDOW;
+
+  r = uv_spawn(uv_default_loop(), &process, &options);
+  ASSERT_OK(r);
+
+  r = uv_run(uv_default_loop(), UV_RUN_DEFAULT);
+  ASSERT_OK(r);
+
+  ASSERT_EQ(1, exit_cb_called);
+  ASSERT_EQ(1, close_cb_called);
+
+  buf = uv_buf_init(output, sizeof(output));
+  r = uv_fs_read(NULL, &fs_req, file, &buf, 1, 0, NULL);
+  ASSERT_GT(r, 0);
+  uv_fs_req_cleanup(&fs_req);
+
+  r = uv_fs_close(NULL, &fs_req, file, NULL);
+  ASSERT_OK(r);
+  uv_fs_req_cleanup(&fs_req);
+
+  /* The child has a console, the console has no window, and the child is the
+   * only process attached to it. */
+  printf("output is: %s", output);
+  ASSERT_OK(strcmp("console=1 window=0 processes=1\n", output));
+
+  /* Cleanup. */
+  unlink("stdout_file");
+
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  return 0;
+}
+
+
+TEST_IMPL(spawn_windows_no_job_object) {
+  int r;
+  int pid;
+  uv_pipe_t out;
+  uv_stdio_container_t stdio[2];
+
+  /* The helper spawns spawn_helper4, which never returns, prints its pid and
+   * exits. */
+  init_process_options("spawn_helper_no_job_object", exit_cb);
+
+  uv_pipe_init(uv_default_loop(), &out, 0);
+  options.stdio = stdio;
+  options.stdio[0].flags = UV_IGNORE;
+  options.stdio[1].flags = UV_CREATE_PIPE | UV_WRITABLE_PIPE;
+  options.stdio[1].data.stream = (uv_stream_t*) &out;
+  options.stdio_count = 2;
+
+  r = uv_spawn(uv_default_loop(), &process, &options);
+  ASSERT_OK(r);
+
+  r = uv_read_start((uv_stream_t*) &out, on_alloc, on_read);
+  ASSERT_OK(r);
+
+  r = uv_run(uv_default_loop(), UV_RUN_DEFAULT);
+  ASSERT_OK(r);
+
+  ASSERT_EQ(1, exit_cb_called);
+  ASSERT_EQ(2, close_cb_called); /* Once for process once for the pipe. */
+
+  printf("output is: %s", output);
+  pid = atoi(output);
+  ASSERT_GT(pid, 0);
+
+  /* The helper has exited and its job object is closed. The process it
+   * spawned is still there. */
+  ASSERT_OK(uv_kill(pid, 0));
+  ASSERT_OK(uv_kill(pid, SIGTERM));
+
+  MAKE_VALGRIND_HAPPY(uv_default_loop());
+  return 0;
+}
 #endif
 
 #ifndef _WIN32
