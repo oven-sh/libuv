@@ -587,6 +587,12 @@ void fs__open(uv_fs_t* req) {
   /* Setting this flag makes it possible to open a directory. */
   attributes |= FILE_FLAG_BACKUP_SEMANTICS;
 
+  /* When the last path component is a symlink or a junction, open the reparse
+   * point itself and do not follow it. Windows ignores the flag for a file
+   * that is not a reparse point. */
+  if (flags & UV_FS_O_NOFOLLOW)
+    attributes |= FILE_FLAG_OPEN_REPARSE_POINT;
+
   file = CreateFileW(req->file.pathw,
                      access,
                      share,

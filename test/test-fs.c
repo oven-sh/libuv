@@ -2596,6 +2596,169 @@ TEST_IMPL(fs_symlink_junction) {
 }
 
 #ifdef _WIN32
+static uint64_t fs_open_nofollow_ino(const char* path, int flags) {
+  uv_fs_t req;
+  uv_file file;
+  uint64_t ino;
+  int r;
+
+  r = uv_fs_open(NULL, &req, path, flags, 0, NULL);
+  ASSERT_GE(r, 0);
+  file = r;
+  uv_fs_req_cleanup(&req);
+
+  r = uv_fs_fstat(NULL, &req, file, NULL);
+  ASSERT_OK(r);
+  ino = req.statbuf.st_ino;
+  uv_fs_req_cleanup(&req);
+
+  r = uv_fs_close(NULL, &req, file, NULL);
+  ASSERT_OK(r);
+  uv_fs_req_cleanup(&req);
+
+  return ino;
+}
+
+
+TEST_IMPL(fs_open_nofollow) {
+  uv_fs_t req;
+  int r;
+  uv_file file;
+  uint64_t target_ino;
+  uint64_t link_ino;
+  char buf[32];
+  uv_buf_t iov;
+  static char test_dir_abs_buf[PATHMAX];
+  size_t test_dir_abs_size;
+
+  RETURN_SKIP_IN_APPCONTAINER("junction lstat not supported");
+
+  /* set-up */
+  unlink("test_file_symlink");
+  rmdir("test_dir_junction");
+  unlink("test_dir/file1");
+  rmdir("test_dir");
+
+  loop = uv_default_loop();
+
+  r = uv_fs_mkdir(NULL, &req, "test_dir", 0777, NULL);
+  ASSERT_OK(r);
+  uv_fs_req_cleanup(&req);
+
+  test_dir_abs_size = sizeof(test_dir_abs_buf);
+  strcpy(test_dir_abs_buf, "\\\\?\\");
+  uv_cwd(test_dir_abs_buf + 4, &test_dir_abs_size);
+  strcat(test_dir_abs_buf, "\\test_dir");
+
+  r = uv_fs_symlink(NULL,
+                    &req,
+                    test_dir_abs_buf,
+                    "test_dir_junction",
+                    UV_FS_SYMLINK_JUNCTION,
+                    NULL);
+  ASSERT_OK(r);
+  uv_fs_req_cleanup(&req);
+
+  r = uv_fs_stat(NULL, &req, "test_dir_junction", NULL);
+  ASSERT_OK(r);
+  target_ino = req.statbuf.st_ino;
+  uv_fs_req_cleanup(&req);
+
+  r = uv_fs_lstat(NULL, &req, "test_dir_junction", NULL);
+  ASSERT_OK(r);
+  link_ino = req.statbuf.st_ino;
+  uv_fs_req_cleanup(&req);
+
+  ASSERT_NE(target_ino, link_ino);
+
+  /* Without the flag the open follows the junction. With it, the open
+   * returns the junction itself. */
+  ASSERT_EQ(target_ino,
+            fs_open_nofollow_ino("test_dir_junction", UV_FS_O_RDONLY));
+  ASSERT_EQ(link_ino,
+            fs_open_nofollow_ino("test_dir_junction",
+                                 UV_FS_O_RDONLY | UV_FS_O_NOFOLLOW));
+
+  /* The flag has no effect on a path that is not a link. */
+  ASSERT_EQ(target_ino,
+            fs_open_nofollow_ino("test_dir",
+                                 UV_FS_O_RDONLY | UV_FS_O_NOFOLLOW));
+
+  /* The same for a file symlink, when this user can create one. */
+  r = uv_fs_open(NULL,
+                 &req,
+                 "test_dir/file1",
+                 UV_FS_O_WRONLY | UV_FS_O_CREAT | UV_FS_O_NOFOLLOW,
+                 S_IWUSR | S_IRUSR,
+                 NULL);
+  ASSERT_GE(r, 0);
+  file = r;
+  uv_fs_req_cleanup(&req);
+  iov = uv_buf_init("target", 6);
+  r = uv_fs_write(NULL, &req, file, &iov, 1, -1, NULL);
+  ASSERT_EQ(6, r);
+  uv_fs_req_cleanup(&req);
+  r = uv_fs_close(NULL, &req, file, NULL);
+  ASSERT_OK(r);
+  uv_fs_req_cleanup(&req);
+
+  r = uv_fs_symlink(NULL,
+                    &req,
+                    "test_dir\\file1",
+                    "test_file_symlink",
+                    0,
+                    NULL);
+  uv_fs_req_cleanup(&req);
+  if (r == 0) {
+    r = uv_fs_stat(NULL, &req, "test_file_symlink", NULL);
+    ASSERT_OK(r);
+    target_ino = req.statbuf.st_ino;
+    uv_fs_req_cleanup(&req);
+
+    r = uv_fs_lstat(NULL, &req, "test_file_symlink", NULL);
+    ASSERT_OK(r);
+    link_ino = req.statbuf.st_ino;
+    uv_fs_req_cleanup(&req);
+
+    ASSERT_NE(target_ino, link_ino);
+    ASSERT_EQ(target_ino,
+              fs_open_nofollow_ino("test_file_symlink", UV_FS_O_RDONLY));
+    ASSERT_EQ(link_ino,
+              fs_open_nofollow_ino("test_file_symlink",
+                                   UV_FS_O_RDONLY | UV_FS_O_NOFOLLOW));
+
+    /* The link itself has no data. */
+    r = uv_fs_open(NULL,
+                   &req,
+                   "test_file_symlink",
+                   UV_FS_O_RDONLY | UV_FS_O_NOFOLLOW,
+                   0,
+                   NULL);
+    ASSERT_GE(r, 0);
+    file = r;
+    uv_fs_req_cleanup(&req);
+    iov = uv_buf_init(buf, sizeof(buf));
+    r = uv_fs_read(NULL, &req, file, &iov, 1, 0, NULL);
+    ASSERT_OK(r);
+    uv_fs_req_cleanup(&req);
+    r = uv_fs_close(NULL, &req, file, NULL);
+    ASSERT_OK(r);
+    uv_fs_req_cleanup(&req);
+  } else {
+    ASSERT(r == UV_EPERM || r == UV_ENOTSUP);
+  }
+
+  /* clean-up */
+  unlink("test_file_symlink");
+  rmdir("test_dir_junction");
+  unlink("test_dir/file1");
+  rmdir("test_dir");
+
+  MAKE_VALGRIND_HAPPY(loop);
+  return 0;
+}
+
+
 TEST_IMPL(fs_non_symlink_reparse_point) {
   uv_fs_t req;
   int r;
