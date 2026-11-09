@@ -283,6 +283,7 @@ void uv__stdio_destroy(BYTE* buffer);
 void uv__stdio_noinherit(BYTE* buffer);
 int uv__stdio_verify(BYTE* buffer, WORD size);
 WORD uv__stdio_size(BYTE* buffer);
+int uv__stdio_count(BYTE* buffer);
 HANDLE uv__stdio_handle(BYTE* buffer, int fd);
 
 

@@ -412,6 +412,11 @@ WORD uv__stdio_size(BYTE* buffer) {
 }
 
 
+int uv__stdio_count(BYTE* buffer) {
+  return (int) CHILD_STDIO_COUNT(buffer);
+}
+
+
 HANDLE uv__stdio_handle(BYTE* buffer, int fd) {
   HANDLE handle;
   memcpy(&handle, CHILD_STDIO_HANDLE(buffer, fd), sizeof(HANDLE));
