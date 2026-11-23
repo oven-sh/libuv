@@ -424,6 +424,15 @@ int uv__loop_configure(uv_loop_t* loop, uv_loop_option option, va_list ap) {
 }
 
 
+void uv_loop_set_wait_cb(uv_loop_t* loop, uv_loop_wait_cb cb, void* arg) {
+  uv__loop_internal_fields_t* lfields;
+
+  lfields = uv__get_internal_fields(loop);
+  lfields->wait_cb = cb;
+  lfields->wait_cb_arg = arg;
+}
+
+
 int uv_backend_fd(const uv_loop_t* loop) {
   return -1;
 }
@@ -467,6 +476,7 @@ static void uv__poll(uv_loop_t* loop, DWORD timeout) {
   OVERLAPPED* overlapped;
   ULONG count;
   ULONG i;
+  DWORD err;
   int repeat;
   uint64_t timeout_time;
   uint64_t user_timeout;
@@ -528,12 +538,17 @@ static void uv__poll(uv_loop_t* loop, DWORD timeout) {
 
     if (timeout != 0)
       uv__detect_system_wakeup_ensure();
+    if (timeout != 0 && lfields->wait_cb != NULL)
+      lfields->wait_cb(lfields->wait_cb_arg, 1);
     success = GetQueuedCompletionStatusEx(loop->iocp,
                                           overlappeds,
                                           ARRAY_SIZE(overlappeds),
                                           &count,
                                           timeout,
                                           FALSE);
+    err = GetLastError();
+    if (timeout != 0 && lfields->wait_cb != NULL)
+      lfields->wait_cb(lfields->wait_cb_arg, 0);
 
     if (reset_timeout != 0) {
       timeout = user_timeout;
@@ -567,9 +582,9 @@ static void uv__poll(uv_loop_t* loop, DWORD timeout) {
        * so update the loop time here.
        */
       uv_update_time(loop);
-    } else if (GetLastError() != WAIT_TIMEOUT) {
+    } else if (err != WAIT_TIMEOUT) {
       /* Serious error */
-      uv_fatal_error(GetLastError(), "GetQueuedCompletionStatusEx");
+      uv_fatal_error(err, "GetQueuedCompletionStatusEx");
     } else if (timeout > 0) {
       /* GetQueuedCompletionStatus can occasionally return a little early.
        * Make sure that the desired timeout target time is reached.

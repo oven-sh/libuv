@@ -45,6 +45,10 @@ Data types
 
     Type definition for callback passed to :c:func:`uv_walk`.
 
+.. c:type:: void (*uv_loop_wait_cb)(void* arg, int is_waiting)
+
+    Type definition for callback passed to :c:func:`uv_loop_set_wait_cb`.
+
 
 Public members
 ^^^^^^^^^^^^^^
@@ -92,6 +96,18 @@ API
     .. versionchanged:: 1.39.0 added the UV_METRICS_IDLE_TIME option.
 
     .. versionchanged:: 1.49.0 added the UV_LOOP_USE_IO_URING_SQPOLL option.
+
+.. c:function:: void uv_loop_set_wait_cb(uv_loop_t* loop, uv_loop_wait_cb cb, void* arg)
+
+    Windows only. Calls `cb` on the loop's thread with `is_waiting` set to 1
+    right before a poll that may block, and with 0 right after it, before any
+    other callback. A poll with a timeout of zero is not reported. Pass NULL to
+    remove the callback.
+
+    `cb` must not use the loop.
+
+    .. warning::
+        This function is not thread safe.
 
 .. c:function:: int uv_loop_close(uv_loop_t* loop)
 
