@@ -440,6 +440,8 @@ struct uv__loop_internal_fields_s {
 #ifdef _WIN32
   void* hrtimer;       /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION or NULL */
   void* hrtimer_pkt;   /* NtCreateWaitCompletionPacket handle or NULL */
+  uv_loop_wait_cb wait_cb;
+  void* wait_cb_arg;
 #endif  /* _WIN32 */
 };
 
